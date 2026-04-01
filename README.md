@@ -47,3 +47,22 @@ Upload:
 fx_features_wide.csv
 🔹 Step 5 — Run your pipeline
 !python main.py
+
+
+
+How to run the build
+
+In GitHub:
+
+Open your repo
+Click Actions
+Click Build Windows EXE
+Click Run workflow
+
+After it finishes:
+
+Open the completed workflow run
+Download the artifact:
+FXMLApp-windows
+
+That ZIP will contain your Windows app.
