@@ -5,19 +5,21 @@ from __future__ import annotations
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.ticker import PercentFormatter
 
 
 def plot_pnl_curves(cum1: pd.DataFrame, cum3: pd.DataFrame, cum5: pd.DataFrame, cum_eq: pd.DataFrame) -> None:
-    """Plot cumulative PnL curves for strategies and equal-weight benchmark."""
+    """Plot cumulative annualized return curves for strategies and benchmark."""
     plt.figure(figsize=(12, 6))
-    plt.plot(cum1["Date"], cum1["cum"], label="Top-1 Strategy", linewidth=2.5)
-    plt.plot(cum3["Date"], cum3["cum"], label="Top-3 Strategy", linewidth=2.2)
-    plt.plot(cum5["Date"], cum5["cum"], label="Top-5 Strategy", linewidth=2.0)
-    plt.plot(cum_eq["Date"], cum_eq["cum"], label="Equal-Weight Benchmark", linewidth=2.0, linestyle="--")
+    plt.plot(cum1["Date"], cum1["cum_ann"], label="Top-1 Strategy", linewidth=2.5)
+    plt.plot(cum3["Date"], cum3["cum_ann"], label="Top-3 Strategy", linewidth=2.2)
+    plt.plot(cum5["Date"], cum5["cum_ann"], label="Top-5 Strategy", linewidth=2.0)
+    plt.plot(cum_eq["Date"], cum_eq["cum_ann"], label="Equal-Weight Benchmark", linewidth=2.0, linestyle="--")
     plt.grid(True, alpha=0.3)
     plt.xlabel("Date")
-    plt.ylabel("Cumulative Return")
-    plt.title("Sliding-Window Walk-Forward PnL")
+    plt.ylabel("Cumulative Annualized Return %")
+    plt.gca().yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
+    plt.title("Sliding-Window Walk-Forward Annualized Return")
     plt.legend()
     plt.tight_layout()
     plt.show()
@@ -103,7 +105,9 @@ def plot_with_regimes(
         df2 = df_pnl.copy()
         df2 = df2[(df2["Date"] >= start_date) & (df2["Date"] <= end_date)]
         df2 = df2.sort_values("Date")
-        df2["cum"] = (1.0 + df2["pnl"]).cumprod()
+        df2["wealth"] = (1.0 + df2["pnl"]).cumprod()
+        elapsed_periods = np.arange(1, len(df2) + 1)
+        df2["cum_ann"] = np.power(df2["wealth"], 252.0 / elapsed_periods) - 1.0
         return df2
 
     cum1 = _cumulative(pnl_top1)
@@ -116,10 +120,10 @@ def plot_with_regimes(
     for (start, end, reg) in segments:
         plt.axvspan(start, end, color=colors[reg], zorder=0)
 
-    plt.plot(cum1["Date"], cum1["cum"], label="Top-1 Strategy", linewidth=2.2)
-    plt.plot(cum3["Date"], cum3["cum"], label="Top-3 Strategy", linewidth=2.0)
-    plt.plot(cum5["Date"], cum5["cum"], label="Top-5 Strategy", linewidth=1.8)
-    plt.plot(cum_eq["Date"], cum_eq["cum"], label="Equal-Weight Benchmark", linewidth=1.8, linestyle="--")
+    plt.plot(cum1["Date"], cum1["cum_ann"], label="Top-1 Strategy", linewidth=2.2)
+    plt.plot(cum3["Date"], cum3["cum_ann"], label="Top-3 Strategy", linewidth=2.0)
+    plt.plot(cum5["Date"], cum5["cum_ann"], label="Top-5 Strategy", linewidth=1.8)
+    plt.plot(cum_eq["Date"], cum_eq["cum_ann"], label="Equal-Weight Benchmark", linewidth=1.8, linestyle="--")
 
     handles, leg_labels = plt.gca().get_legend_handles_labels()
     for reg in sorted(set(daily_ret["regime"])):
@@ -127,9 +131,10 @@ def plot_with_regimes(
         leg_labels.append(labels[reg])
 
     plt.legend(handles, leg_labels, loc="upper left", bbox_to_anchor=(1.02, 1.0))
-    plt.title("Cumulative PnL with Predictive Volatility Regimes (EWMA-based)")
+    plt.title("Cumulative Annualized Return with Predictive Volatility Regimes")
     plt.xlabel("Date")
-    plt.ylabel("Cumulative Return")
+    plt.ylabel("Cumulative Annualized Return %")
+    plt.gca().yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.show()

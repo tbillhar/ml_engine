@@ -7,6 +7,7 @@ from typing import Callable
 
 import matplotlib.pyplot as plt
 import pandas as pd
+from matplotlib.ticker import PercentFormatter
 
 from src.data_pipeline import load_csv, parse_and_sort_dates
 from src.feature_engineering import compute_future_returns
@@ -14,7 +15,7 @@ from src.long_format import build_long
 from src.pnl_analysis import (
     compute_equal_weight_pnl,
     compute_topK_pnl,
-    cumulative_curve,
+    cumulative_annualized_curve,
     perf_stats,
 )
 from src.walkforward_model import run_walkforward_model
@@ -29,6 +30,7 @@ def run_pipeline(
     test_days: int,
     step_days: int,
     horizon: int,
+    transaction_loss_pct: float,
     output_dir: Path,
     log_fn: LogFn = None,
     progress_fn: ProgressFn = None,
@@ -76,15 +78,15 @@ def run_pipeline(
 
     log("Computing PnL series")
     set_progress(75)
-    pnl_top1 = compute_topK_pnl(pred_df, 1)
-    pnl_top3 = compute_topK_pnl(pred_df, 3)
-    pnl_top5 = compute_topK_pnl(pred_df, 5)
-    pnl_eq = compute_equal_weight_pnl(pred_df)
+    pnl_top1 = compute_topK_pnl(pred_df, 1, transaction_loss_pct=transaction_loss_pct)
+    pnl_top3 = compute_topK_pnl(pred_df, 3, transaction_loss_pct=transaction_loss_pct)
+    pnl_top5 = compute_topK_pnl(pred_df, 5, transaction_loss_pct=transaction_loss_pct)
+    pnl_eq = compute_equal_weight_pnl(pred_df, transaction_loss_pct=transaction_loss_pct)
 
-    cum1 = cumulative_curve(pnl_top1)
-    cum3 = cumulative_curve(pnl_top3)
-    cum5 = cumulative_curve(pnl_top5)
-    cum_eq = cumulative_curve(pnl_eq)
+    cum1 = cumulative_annualized_curve(pnl_top1)
+    cum3 = cumulative_annualized_curve(pnl_top3)
+    cum5 = cumulative_annualized_curve(pnl_top5)
+    cum_eq = cumulative_annualized_curve(pnl_eq)
 
     top1_stats = perf_stats(pnl_top1, horizon_days=horizon)
     top3_stats = perf_stats(pnl_top3, horizon_days=horizon)
@@ -112,19 +114,20 @@ def run_pipeline(
     set_progress(90)
     plot_path = output_dir / "pnl_curves.png"
     plt.figure(figsize=(12, 6))
-    plt.plot(cum1["Date"], cum1["cum"], label="Top-1", linewidth=2.5)
-    plt.plot(cum3["Date"], cum3["cum"], label="Top-3", linewidth=2.2)
-    plt.plot(cum5["Date"], cum5["cum"], label="Top-5", linewidth=2.0)
+    plt.plot(cum1["Date"], cum1["cum_ann"], label="Top-1", linewidth=2.5)
+    plt.plot(cum3["Date"], cum3["cum_ann"], label="Top-3", linewidth=2.2)
+    plt.plot(cum5["Date"], cum5["cum_ann"], label="Top-5", linewidth=2.0)
     plt.plot(
         cum_eq["Date"],
-        cum_eq["cum"],
+        cum_eq["cum_ann"],
         label="Equal-Weight",
         linestyle="--",
         linewidth=1.8,
     )
-    plt.title("Cumulative PnL")
+    plt.title("Cumulative Annualized Return")
     plt.xlabel("Date")
-    plt.ylabel("Cumulative Return")
+    plt.ylabel("Cumulative Annualized Return %")
+    plt.gca().yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
     plt.grid(alpha=0.3)
     plt.legend()
     plt.tight_layout()

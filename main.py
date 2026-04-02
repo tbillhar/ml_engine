@@ -2,7 +2,13 @@
 
 from pathlib import Path
 
-from src.config import HORIZON, STEP_DAYS, TEST_DAYS, TRAIN_DAYS
+from src.config import (
+    HORIZON,
+    STEP_DAYS,
+    TEST_DAYS,
+    TRAIN_DAYS,
+    TRANSACTION_LOSS_PCT,
+)
 from src.pipeline_runner import run_pipeline
 
 
@@ -15,6 +21,7 @@ def main() -> None:
         test_days=TEST_DAYS,
         step_days=STEP_DAYS,
         horizon=HORIZON,
+        transaction_loss_pct=TRANSACTION_LOSS_PCT,
         output_dir=output_dir,
         log_fn=print,
     )

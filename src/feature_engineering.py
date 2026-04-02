@@ -33,15 +33,16 @@ def compute_momentum_features(df_ret: pd.DataFrame, pairs: list[str]) -> pd.Data
 
 
 def compute_future_returns(df: pd.DataFrame, horizon: int, ret_prefix: str = "ret_") -> pd.DataFrame:
-    """Attach HORIZON-day forward return sums and trim invalid tail rows."""
+    """Attach compounded HORIZON-day forward returns and trim invalid tail rows."""
     ret_cols = [c for c in df.columns if c.startswith(ret_prefix)]
     ret_mat = df[ret_cols].copy()
 
     future_mat = (
-        ret_mat
+        (1.0 + ret_mat)
         .rolling(window=horizon, min_periods=horizon)
-        .sum()
+        .apply(lambda x: x.prod(), raw=True)
         .shift(-horizon)
+        - 1.0
     )
 
     valid_mask = ~future_mat.isna().any(axis=1)

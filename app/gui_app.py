@@ -36,7 +36,13 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from src.config import HORIZON, STEP_DAYS, TEST_DAYS, TRAIN_DAYS
+from src.config import (
+    HORIZON,
+    STEP_DAYS,
+    TEST_DAYS,
+    TRAIN_DAYS,
+    TRANSACTION_LOSS_PCT,
+)
 from src.pipeline_runner import run_pipeline
 
 
@@ -55,6 +61,7 @@ class PipelineWorker(QObject):
         test_days: int,
         step_days: int,
         horizon: int,
+        transaction_loss_pct: float,
         output_dir: Path,
     ) -> None:
         super().__init__()
@@ -63,6 +70,7 @@ class PipelineWorker(QObject):
         self.test_days = test_days
         self.step_days = step_days
         self.horizon = horizon
+        self.transaction_loss_pct = transaction_loss_pct
         self.output_dir = output_dir
 
     def run(self) -> None:
@@ -73,6 +81,7 @@ class PipelineWorker(QObject):
                 test_days=self.test_days,
                 step_days=self.step_days,
                 horizon=self.horizon,
+                transaction_loss_pct=self.transaction_loss_pct,
                 output_dir=self.output_dir,
                 log_fn=self.log.emit,
                 progress_fn=self.progress.emit,
@@ -102,6 +111,7 @@ class FXPipelineWindow(QMainWindow):
         self.test_input = QLineEdit(str(TEST_DAYS))
         self.step_input = QLineEdit(str(STEP_DAYS))
         self.horizon_input = QLineEdit(str(HORIZON))
+        self.transaction_loss_input = QLineEdit(str(TRANSACTION_LOSS_PCT))
 
         self.run_btn = QPushButton("Run Pipeline")
         self.run_btn.clicked.connect(self.start_pipeline)
@@ -141,6 +151,7 @@ class FXPipelineWindow(QMainWindow):
         params_form.addRow("TEST_DAYS", self.test_input)
         params_form.addRow("STEP_DAYS", self.step_input)
         params_form.addRow("HORIZON", self.horizon_input)
+        params_form.addRow("TRANSACTION_LOSS_PCT", self.transaction_loss_input)
 
         action_row = QHBoxLayout()
         action_row.addWidget(self.run_btn)
@@ -194,6 +205,13 @@ class FXPipelineWindow(QMainWindow):
             raise ValueError(f"{name} must be a positive integer")
         return value
 
+    def _read_nonnegative_float(self, widget: QLineEdit, name: str) -> float:
+        text = widget.text().strip()
+        value = float(text)
+        if value < 0:
+            raise ValueError(f"{name} must be non-negative")
+        return value
+
     def start_pipeline(self) -> None:
         try:
             csv_path = self.csv_path_label.text().strip()
@@ -206,6 +224,10 @@ class FXPipelineWindow(QMainWindow):
             test_days = self._read_int(self.test_input, "TEST_DAYS")
             step_days = self._read_int(self.step_input, "STEP_DAYS")
             horizon = self._read_int(self.horizon_input, "HORIZON")
+            transaction_loss_pct = self._read_nonnegative_float(
+                self.transaction_loss_input,
+                "TRANSACTION_LOSS_PCT",
+            )
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Invalid Input", str(exc))
             return
@@ -223,6 +245,7 @@ class FXPipelineWindow(QMainWindow):
             test_days=test_days,
             step_days=step_days,
             horizon=horizon,
+            transaction_loss_pct=transaction_loss_pct,
             output_dir=self.output_dir,
         )
         self.worker.moveToThread(self.worker_thread)
@@ -256,10 +279,10 @@ class FXPipelineWindow(QMainWindow):
         self.summary_table.setRowCount(len(stats_df))
         for i, row in stats_df.iterrows():
             self.summary_table.setItem(i, 0, QTableWidgetItem(str(row["strategy"])))
-            self.summary_table.setItem(i, 1, QTableWidgetItem(f"{row['Annualized Return']:.6f}"))
-            self.summary_table.setItem(i, 2, QTableWidgetItem(f"{row['Annualized Vol']:.6f}"))
+            self.summary_table.setItem(i, 1, QTableWidgetItem(f"{row['Annualized Return'] * 100:.1f}%"))
+            self.summary_table.setItem(i, 2, QTableWidgetItem(f"{row['Annualized Vol'] * 100:.1f}%"))
             self.summary_table.setItem(i, 3, QTableWidgetItem(f"{row['Sharpe']:.6f}"))
-            self.summary_table.setItem(i, 4, QTableWidgetItem(f"{row['Cumulative Return']:.6f}"))
+            self.summary_table.setItem(i, 4, QTableWidgetItem(f"{row['Cumulative Return'] * 100:.1f}%"))
         self.summary_table.resizeColumnsToContents()
 
     def load_plot(self, plot_path: str) -> None:
