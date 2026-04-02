@@ -4,3 +4,4 @@ matplotlib
 PySide6
 lightgbm
 pyinstaller
+scikit-learn
