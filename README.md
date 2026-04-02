@@ -66,3 +66,11 @@ Download the artifact:
 FXMLApp-windows
 
 That ZIP will contain your Windows app.
+
+Now I have Git my Git repo locally at C:\Users\tbill\Documents\ml_engine
+Downloaded Git Desktop to build the .exe locally, but it cant!
+So, still using the GitHub cloud for .exe build, then download then extract to my PC, then run
+I download the .zip artifact to G:\My Drive\Home\Forex and extract it to G:\My Drive\Home\Forex\FXMLPipeline-windows
+I've been coping over the data and outputs folders to that folder since thats where the inputs are and outputs go
+Lately running Codex CLI via Powershell locally for new code development, since it can make commits to my local Git repo
+Going to try Codex app for local Codex work.....
