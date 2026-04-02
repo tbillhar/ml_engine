@@ -1,4 +1,4 @@
-"""Example script running the FX notebook pipeline via reusable modules."""
+"""Run the FX pipeline from the command line using the shared modules."""
 
 from pathlib import Path
 
