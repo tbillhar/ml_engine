@@ -75,4 +75,5 @@ jobs:
         with:
           name: FXMLPipeline-windows
           path: dist/FXMLPipeline/
+          include-hidden-files: true
           if-no-files-found: error
