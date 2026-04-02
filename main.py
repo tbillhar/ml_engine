@@ -21,6 +21,7 @@ from src.walkforward_model import run_walkforward_model
 def main() -> None:
     csv_path = "data/fx_features_wide.csv"
     output_dir = Path("outputs")
+    # Keep batch-mode outputs in a dedicated folder for later inspection.
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading input CSV: {csv_path}")
