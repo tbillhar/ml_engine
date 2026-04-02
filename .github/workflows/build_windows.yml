@@ -60,6 +60,7 @@ jobs:
           pyinstaller --noconfirm --clean FXMLPipeline.spec
 
       - name: Diagnostics - show bundled sklearn folders
+        shell: cmd
         run: |
           dir dist\FXMLPipeline\_internal\sklearn
           if exist dist\FXMLPipeline\_internal\sklearn\.libs (
