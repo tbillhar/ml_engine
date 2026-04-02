@@ -29,20 +29,26 @@ jobs:
           pip install pyinstaller
 
       - name: Diagnostics - show sklearn/scipy package paths
+        shell: bash
         run: |
           python - << 'PY'
-          import sklearn, scipy, os
+          import sklearn, scipy
           from pathlib import Path
+
           print("sklearn:", sklearn.__file__)
           print("scipy:", scipy.__file__)
+
           sk_path = Path(sklearn.__file__).parent
           sp_path = Path(scipy.__file__).parent
+
           print("sklearn/.libs exists:", (sk_path / ".libs").exists())
           print("scipy/.libs exists:", (sp_path / ".libs").exists())
+
           if (sk_path / ".libs").exists():
               print("sklearn/.libs contents:")
               for p in (sk_path / ".libs").iterdir():
                   print(" -", p.name)
+
           if (sp_path / ".libs").exists():
               print("scipy/.libs contents:")
               for p in (sp_path / ".libs").iterdir():
