@@ -1,4 +1,4 @@
-"""Run the FX pipeline from the command line using the shared modules."""
+"""Run the FX pipeline from the command line using shared pipeline modules."""
 
 from pathlib import Path
 
