@@ -6,6 +6,7 @@ from src.config import (
     HORIZON,
     STEP_DAYS,
     TEST_DAYS,
+    TRADING_DAYS_PER_YEAR,
     TRAIN_DAYS,
     TRANSACTION_LOSS_PCT,
 )
@@ -22,6 +23,7 @@ def main() -> None:
         step_days=STEP_DAYS,
         horizon=HORIZON,
         transaction_loss_pct=TRANSACTION_LOSS_PCT,
+        trading_days_per_year=TRADING_DAYS_PER_YEAR,
         output_dir=output_dir,
         log_fn=print,
     )

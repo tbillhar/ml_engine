@@ -40,6 +40,7 @@ from src.config import (
     HORIZON,
     STEP_DAYS,
     TEST_DAYS,
+    TRADING_DAYS_PER_YEAR,
     TRAIN_DAYS,
     TRANSACTION_LOSS_PCT,
 )
@@ -62,6 +63,7 @@ class PipelineWorker(QObject):
         step_days: int,
         horizon: int,
         transaction_loss_pct: float,
+        trading_days_per_year: int,
         output_dir: Path,
     ) -> None:
         super().__init__()
@@ -71,6 +73,7 @@ class PipelineWorker(QObject):
         self.step_days = step_days
         self.horizon = horizon
         self.transaction_loss_pct = transaction_loss_pct
+        self.trading_days_per_year = trading_days_per_year
         self.output_dir = output_dir
 
     def run(self) -> None:
@@ -82,6 +85,7 @@ class PipelineWorker(QObject):
                 step_days=self.step_days,
                 horizon=self.horizon,
                 transaction_loss_pct=self.transaction_loss_pct,
+                trading_days_per_year=self.trading_days_per_year,
                 output_dir=self.output_dir,
                 log_fn=self.log.emit,
                 progress_fn=self.progress.emit,
@@ -112,6 +116,7 @@ class FXPipelineWindow(QMainWindow):
         self.step_input = QLineEdit(str(STEP_DAYS))
         self.horizon_input = QLineEdit(str(HORIZON))
         self.transaction_loss_input = QLineEdit(str(TRANSACTION_LOSS_PCT))
+        self.trading_days_input = QLineEdit(str(TRADING_DAYS_PER_YEAR))
 
         self.run_btn = QPushButton("Run Pipeline")
         self.run_btn.clicked.connect(self.start_pipeline)
@@ -133,7 +138,7 @@ class FXPipelineWindow(QMainWindow):
             [
                 "Strategy",
                 "Annualized Return",
-                "Annualized Vol",
+                "Annualized Volatility",
                 "Sharpe",
                 "Cumulative Return",
             ]
@@ -152,6 +157,7 @@ class FXPipelineWindow(QMainWindow):
         params_form.addRow("STEP_DAYS", self.step_input)
         params_form.addRow("HORIZON", self.horizon_input)
         params_form.addRow("TRANSACTION_LOSS_PCT", self.transaction_loss_input)
+        params_form.addRow("TRADING_DAYS_PER_YEAR", self.trading_days_input)
 
         action_row = QHBoxLayout()
         action_row.addWidget(self.run_btn)
@@ -228,6 +234,10 @@ class FXPipelineWindow(QMainWindow):
                 self.transaction_loss_input,
                 "TRANSACTION_LOSS_PCT",
             )
+            trading_days_per_year = self._read_int(
+                self.trading_days_input,
+                "TRADING_DAYS_PER_YEAR",
+            )
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Invalid Input", str(exc))
             return
@@ -246,6 +256,7 @@ class FXPipelineWindow(QMainWindow):
             step_days=step_days,
             horizon=horizon,
             transaction_loss_pct=transaction_loss_pct,
+            trading_days_per_year=trading_days_per_year,
             output_dir=self.output_dir,
         )
         self.worker.moveToThread(self.worker_thread)

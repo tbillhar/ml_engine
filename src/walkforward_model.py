@@ -34,7 +34,7 @@ def run_walkforward_model(
     """Run sliding-window LightGBM ranker and return concatenated predictions."""
     feature_cols = [
         c for c in long_df.columns
-        if c not in ["Date", "pair", "future_ret", "rel"]
+        if c not in ["Date", "pair", "next_ret", "future_ret", "rel"]
     ]
 
     all_dates = sorted(long_df["Date"].unique())
@@ -70,7 +70,9 @@ def run_walkforward_model(
         preds = ranker.predict(X_test)
         test_sub = test_sub.copy()
         test_sub["pred"] = preds
-        all_test_chunks.append(test_sub[["Date", "pair", "future_ret", "rel", "pred"]])
+        all_test_chunks.append(
+            test_sub[["Date", "pair", "next_ret", "future_ret", "rel", "pred"]]
+        )
 
     pred_df = pd.concat(all_test_chunks, ignore_index=True)
     pred_df = pred_df.sort_values(["Date", "pair"]).reset_index(drop=True)

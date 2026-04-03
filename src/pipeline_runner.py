@@ -31,6 +31,7 @@ def run_pipeline(
     step_days: int,
     horizon: int,
     transaction_loss_pct: float,
+    trading_days_per_year: int,
     output_dir: Path,
     log_fn: LogFn = None,
     progress_fn: ProgressFn = None,
@@ -76,22 +77,22 @@ def run_pipeline(
         step_days=step_days,
     )
 
-    log("Computing PnL series")
+    log("Computing daily mark-to-market PnL series")
     set_progress(75)
     pnl_top1 = compute_topK_pnl(pred_df, 1, transaction_loss_pct=transaction_loss_pct)
     pnl_top3 = compute_topK_pnl(pred_df, 3, transaction_loss_pct=transaction_loss_pct)
     pnl_top5 = compute_topK_pnl(pred_df, 5, transaction_loss_pct=transaction_loss_pct)
     pnl_eq = compute_equal_weight_pnl(pred_df, transaction_loss_pct=transaction_loss_pct)
 
-    cum1 = cumulative_annualized_curve(pnl_top1)
-    cum3 = cumulative_annualized_curve(pnl_top3)
-    cum5 = cumulative_annualized_curve(pnl_top5)
-    cum_eq = cumulative_annualized_curve(pnl_eq)
+    cum1 = cumulative_annualized_curve(pnl_top1, trading_days_per_year=trading_days_per_year)
+    cum3 = cumulative_annualized_curve(pnl_top3, trading_days_per_year=trading_days_per_year)
+    cum5 = cumulative_annualized_curve(pnl_top5, trading_days_per_year=trading_days_per_year)
+    cum_eq = cumulative_annualized_curve(pnl_eq, trading_days_per_year=trading_days_per_year)
 
-    top1_stats = perf_stats(pnl_top1, horizon_days=horizon)
-    top3_stats = perf_stats(pnl_top3, horizon_days=horizon)
-    top5_stats = perf_stats(pnl_top5, horizon_days=horizon)
-    eq_stats = perf_stats(pnl_eq, horizon_days=horizon)
+    top1_stats = perf_stats(pnl_top1, trading_days_per_year=trading_days_per_year)
+    top3_stats = perf_stats(pnl_top3, trading_days_per_year=trading_days_per_year)
+    top5_stats = perf_stats(pnl_top5, trading_days_per_year=trading_days_per_year)
+    eq_stats = perf_stats(pnl_eq, trading_days_per_year=trading_days_per_year)
 
     log("Saving CSV outputs")
     pred_df.to_csv(output_dir / "predictions.csv", index=False)

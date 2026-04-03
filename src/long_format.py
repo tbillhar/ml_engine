@@ -19,6 +19,7 @@ def build_long(df: pd.DataFrame, pairs: list[str]) -> pd.DataFrame:
         c for c in df.columns
         if c != "Date"
         and not is_pair_feature(c)
+        and not c.startswith("next_ret_")
         and not c.startswith("future_ret_")
     ]
 
@@ -27,11 +28,14 @@ def build_long(df: pd.DataFrame, pairs: list[str]) -> pd.DataFrame:
         d0 = row["Date"]
         for pair in pairs:
             fut_col = f"future_ret_{pair}"
+            next_col = f"next_ret_{pair}"
             fut = row[fut_col]
+            next_ret = row[next_col]
 
             entry = {
                 "Date": d0,
                 "pair": pair,
+                "next_ret": next_ret,
                 "future_ret": fut,
             }
 
