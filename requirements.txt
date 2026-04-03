@@ -4,6 +4,7 @@ scikit-learn
 scipy
 matplotlib
 lightgbm
+yfinance
 PySide6
 pyinstaller
 

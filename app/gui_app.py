@@ -37,14 +37,18 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from src.config import (
+    FEATURE_DATA_FILENAME,
     HORIZON,
+    RAW_DATA_FILENAME,
     STEP_DAYS,
     TEST_DAYS,
     TRADING_DAYS_PER_YEAR,
     TRAIN_DAYS,
     TRANSACTION_LOSS_PCT,
 )
+from src.feature_dataset_builder import build_feature_dataset
 from src.pipeline_runner import run_pipeline
+from src.raw_data_loader import download_raw_fx_data
 
 
 class PipelineWorker(QObject):
@@ -93,6 +97,51 @@ class PipelineWorker(QObject):
             self.completed.emit(stats_df, str(plot_path))
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
+
+
+class RawDataWorker(QObject):
+    """Background worker to download raw Yahoo Finance data."""
+
+    log = Signal(str)
+    completed = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, output_path: Path) -> None:
+        super().__init__()
+        self.output_path = output_path
+
+    def run(self) -> None:
+        try:
+            path = download_raw_fx_data(self.output_path, log_fn=self.log.emit)
+            self.completed.emit(str(path))
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
+
+
+class FeatureBuildWorker(QObject):
+    """Background worker to build a feature CSV from raw OHLC data."""
+
+    log = Signal(str)
+    completed = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, raw_csv_path: Path, output_path: Path) -> None:
+        super().__init__()
+        self.raw_csv_path = raw_csv_path
+        self.output_path = output_path
+
+    def run(self) -> None:
+        try:
+            path = build_feature_dataset(
+                raw_csv_path=self.raw_csv_path,
+                output_csv_path=self.output_path,
+                log_fn=self.log.emit,
+            )
+            self.completed.emit(str(path))
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(str(exc))
+
+
 class FXPipelineWindow(QMainWindow):
     """Main desktop GUI window."""
 
@@ -102,14 +151,26 @@ class FXPipelineWindow(QMainWindow):
         self.resize(1000, 700)
 
         self.output_dir = ROOT_DIR / "outputs"
-        self.worker_thread: QThread | None = None
-        self.worker: PipelineWorker | None = None
+        self.raw_data_path = ROOT_DIR / "data" / RAW_DATA_FILENAME
+        self.feature_data_path = ROOT_DIR / "data" / FEATURE_DATA_FILENAME
+        self.pipeline_thread: QThread | None = None
+        self.pipeline_worker: PipelineWorker | None = None
+        self.task_thread: QThread | None = None
+        self.task_worker: RawDataWorker | FeatureBuildWorker | None = None
 
-        self.csv_path_label = QLabel(str(ROOT_DIR / "data" / "fx_features_wide.csv"))
+        self.csv_path_label = QLabel(str(self.feature_data_path))
         self.csv_path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.raw_data_path_label = QLabel(str(self.raw_data_path))
+        self.raw_data_path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.feature_data_path_label = QLabel(str(self.feature_data_path))
+        self.feature_data_path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         select_csv_btn = QPushButton("Select CSV")
         select_csv_btn.clicked.connect(self.select_csv)
+        self.download_raw_btn = QPushButton("Download Yahoo Data")
+        self.download_raw_btn.clicked.connect(self.start_raw_download)
+        self.build_features_btn = QPushButton("Build Feature CSV")
+        self.build_features_btn.clicked.connect(self.start_feature_build)
 
         self.train_input = QLineEdit(str(TRAIN_DAYS))
         self.test_input = QLineEdit(str(TEST_DAYS))
@@ -151,6 +212,10 @@ class FXPipelineWindow(QMainWindow):
         top_controls.addWidget(select_csv_btn)
         top_controls.addWidget(self.csv_path_label, 1)
 
+        data_form = QFormLayout()
+        data_form.addRow("RAW_DATA_CSV", self.raw_data_path_label)
+        data_form.addRow("FEATURE_CSV", self.feature_data_path_label)
+
         params_form = QFormLayout()
         params_form.addRow("TRAIN_DAYS", self.train_input)
         params_form.addRow("TEST_DAYS", self.test_input)
@@ -160,6 +225,8 @@ class FXPipelineWindow(QMainWindow):
         params_form.addRow("TRADING_DAYS_PER_YEAR", self.trading_days_input)
 
         action_row = QHBoxLayout()
+        action_row.addWidget(self.download_raw_btn)
+        action_row.addWidget(self.build_features_btn)
         action_row.addWidget(self.run_btn)
         action_row.addWidget(self.open_output_btn)
         action_row.addStretch(1)
@@ -167,6 +234,7 @@ class FXPipelineWindow(QMainWindow):
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
         left_layout.addLayout(top_controls)
+        left_layout.addLayout(data_form)
         left_layout.addLayout(params_form)
         left_layout.addLayout(action_row)
         left_layout.addWidget(self.progress_bar)
@@ -194,6 +262,17 @@ class FXPipelineWindow(QMainWindow):
     def append_log(self, msg: str) -> None:
         self.logs.appendPlainText(msg)
 
+    def _set_busy(self, busy: bool) -> None:
+        self.download_raw_btn.setEnabled(not busy)
+        self.build_features_btn.setEnabled(not busy)
+        self.run_btn.setEnabled(not busy)
+
+    def _task_running(self) -> bool:
+        return bool(
+            (self.pipeline_thread and self.pipeline_thread.isRunning())
+            or (self.task_thread and self.task_thread.isRunning())
+        )
+
     def select_csv(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -203,6 +282,65 @@ class FXPipelineWindow(QMainWindow):
         )
         if path:
             self.csv_path_label.setText(path)
+
+    def start_raw_download(self) -> None:
+        if self._task_running():
+            QMessageBox.warning(self, "Busy", "Please wait for the current task to finish.")
+            return
+
+        self._set_busy(True)
+        self.progress_bar.setValue(0)
+        self.status_label.setText("Status: Downloading raw Yahoo data...")
+        self.append_log("Starting Yahoo Finance download...")
+
+        self.task_thread = QThread()
+        self.task_worker = RawDataWorker(self.raw_data_path)
+        self.task_worker.moveToThread(self.task_thread)
+        self.task_thread.started.connect(self.task_worker.run)
+
+        self.task_worker.log.connect(self.append_log)
+        self.task_worker.completed.connect(self.on_raw_download_completed)
+        self.task_worker.failed.connect(self.on_background_task_failed)
+
+        self.task_worker.completed.connect(self.task_thread.quit)
+        self.task_worker.failed.connect(self.task_thread.quit)
+        self.task_thread.finished.connect(self.task_thread.deleteLater)
+        self.task_thread.finished.connect(self.on_task_thread_finished)
+
+        self.task_thread.start()
+
+    def start_feature_build(self) -> None:
+        if self._task_running():
+            QMessageBox.warning(self, "Busy", "Please wait for the current task to finish.")
+            return
+        if not self.raw_data_path.exists():
+            QMessageBox.critical(
+                self,
+                "Missing Raw Data",
+                f"Raw data file does not exist: {self.raw_data_path}",
+            )
+            return
+
+        self._set_busy(True)
+        self.progress_bar.setValue(0)
+        self.status_label.setText("Status: Building feature CSV...")
+        self.append_log("Building feature CSV from raw Yahoo data...")
+
+        self.task_thread = QThread()
+        self.task_worker = FeatureBuildWorker(self.raw_data_path, self.feature_data_path)
+        self.task_worker.moveToThread(self.task_thread)
+        self.task_thread.started.connect(self.task_worker.run)
+
+        self.task_worker.log.connect(self.append_log)
+        self.task_worker.completed.connect(self.on_feature_build_completed)
+        self.task_worker.failed.connect(self.on_background_task_failed)
+
+        self.task_worker.completed.connect(self.task_thread.quit)
+        self.task_worker.failed.connect(self.task_thread.quit)
+        self.task_thread.finished.connect(self.task_thread.deleteLater)
+        self.task_thread.finished.connect(self.on_task_thread_finished)
+
+        self.task_thread.start()
 
     def _read_int(self, widget: QLineEdit, name: str) -> int:
         text = widget.text().strip()
@@ -243,13 +381,15 @@ class FXPipelineWindow(QMainWindow):
             return
 
         self.run_btn.setEnabled(False)
+        self.download_raw_btn.setEnabled(False)
+        self.build_features_btn.setEnabled(False)
         self.progress_bar.setValue(0)
         self.status_label.setText("Status: Running...")
         self.logs.clear()
         self.append_log("Starting pipeline...")
 
-        self.worker_thread = QThread()
-        self.worker = PipelineWorker(
+        self.pipeline_thread = QThread()
+        self.pipeline_worker = PipelineWorker(
             csv_path=csv_path,
             train_days=train_days,
             test_days=test_days,
@@ -259,32 +399,59 @@ class FXPipelineWindow(QMainWindow):
             trading_days_per_year=trading_days_per_year,
             output_dir=self.output_dir,
         )
-        self.worker.moveToThread(self.worker_thread)
-        self.worker_thread.started.connect(self.worker.run)
+        self.pipeline_worker.moveToThread(self.pipeline_thread)
+        self.pipeline_thread.started.connect(self.pipeline_worker.run)
 
-        self.worker.log.connect(self.append_log)
-        self.worker.progress.connect(self.progress_bar.setValue)
-        self.worker.completed.connect(self.on_pipeline_completed)
-        self.worker.failed.connect(self.on_pipeline_failed)
+        self.pipeline_worker.log.connect(self.append_log)
+        self.pipeline_worker.progress.connect(self.progress_bar.setValue)
+        self.pipeline_worker.completed.connect(self.on_pipeline_completed)
+        self.pipeline_worker.failed.connect(self.on_pipeline_failed)
 
-        self.worker.completed.connect(self.worker_thread.quit)
-        self.worker.failed.connect(self.worker_thread.quit)
-        self.worker_thread.finished.connect(self.worker_thread.deleteLater)
+        self.pipeline_worker.completed.connect(self.pipeline_thread.quit)
+        self.pipeline_worker.failed.connect(self.pipeline_thread.quit)
+        self.pipeline_thread.finished.connect(self.pipeline_thread.deleteLater)
+        self.pipeline_thread.finished.connect(self.on_pipeline_thread_finished)
 
-        self.worker_thread.start()
+        self.pipeline_thread.start()
 
     def on_pipeline_completed(self, stats_df: pd.DataFrame, plot_path: str) -> None:
-        self.run_btn.setEnabled(True)
         self.status_label.setText("Status: Done")
         self.populate_summary_table(stats_df)
         self.load_plot(plot_path)
         self.append_log("Pipeline completed successfully.")
 
     def on_pipeline_failed(self, error_msg: str) -> None:
-        self.run_btn.setEnabled(True)
         self.status_label.setText("Status: Error")
         self.append_log(f"Error: {error_msg}")
         QMessageBox.critical(self, "Pipeline Error", error_msg)
+
+    def on_raw_download_completed(self, raw_csv_path: str) -> None:
+        self.progress_bar.setValue(50)
+        self.raw_data_path_label.setText(raw_csv_path)
+        self.status_label.setText("Status: Raw Yahoo data downloaded")
+        self.append_log(f"Raw data download completed: {raw_csv_path}")
+
+    def on_feature_build_completed(self, feature_csv_path: str) -> None:
+        self.progress_bar.setValue(100)
+        self.feature_data_path_label.setText(feature_csv_path)
+        self.csv_path_label.setText(feature_csv_path)
+        self.status_label.setText("Status: Feature CSV ready")
+        self.append_log(f"Feature CSV build completed: {feature_csv_path}")
+
+    def on_background_task_failed(self, error_msg: str) -> None:
+        self.status_label.setText("Status: Error")
+        self.append_log(f"Error: {error_msg}")
+        QMessageBox.critical(self, "Background Task Error", error_msg)
+
+    def on_pipeline_thread_finished(self) -> None:
+        self.pipeline_thread = None
+        self.pipeline_worker = None
+        self._set_busy(False)
+
+    def on_task_thread_finished(self) -> None:
+        self.task_thread = None
+        self.task_worker = None
+        self._set_busy(False)
 
     def populate_summary_table(self, stats_df: pd.DataFrame) -> None:
         self.summary_table.setRowCount(len(stats_df))
