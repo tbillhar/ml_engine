@@ -74,6 +74,24 @@ def _build_rolling_pca_features(
     return pd.DataFrame(data, index=wide_ret.index)
 
 
+def _pairwise_transform(
+    left: pd.DataFrame,
+    right: pd.DataFrame,
+    operation: Callable[[pd.Series, pd.Series], pd.Series],
+    output_prefix: str,
+) -> pd.DataFrame:
+    """Apply a pairwise operation to matching FX pair columns across two frames."""
+    data = {}
+    for left_col in left.columns:
+        pair = left_col.split("_", 1)[1]
+        right_candidates = [c for c in right.columns if c.endswith(pair)]
+        if not right_candidates:
+            continue
+        right_col = right_candidates[0]
+        data[f"{output_prefix}{pair}"] = operation(left[left_col], right[right_col])
+    return pd.DataFrame(data, index=left.index)
+
+
 def build_feature_dataset(
     raw_csv_path: str | Path,
     output_csv_path: str | Path,
@@ -153,7 +171,12 @@ def build_feature_dataset(
     pca_df = _build_rolling_pca_features(wide_ret, window=120, n_components=3)
 
     log("Adding trend, mean-reversion, normalized, and turnover-aware features")
-    accel_df = (wide_mom5 - wide_mom10).rename(columns=lambda c: c.replace("mom5_", "accel_"))
+    accel_df = _pairwise_transform(
+        wide_mom5,
+        wide_mom10,
+        lambda a, b: a - b,
+        "accel_",
+    )
     slope_df = pd.DataFrame(index=wide_ret.index)
     for col in wide_ret.columns:
         slope_df[col.replace("ret_", "slope20_")] = _rolling_linear_slope(wide_ret[col], 20)
@@ -174,11 +197,17 @@ def build_feature_dataset(
     zmom10_df = ((wide_mom10 - mom10_mean20) / mom10_std20).rename(
         columns=lambda c: c.replace("mom10_", "zmom10_20_")
     )
-    norm_mom5_df = wide_mom5.div(wide_vol30).rename(
-        columns=lambda c: c.replace("mom5_", "norm_mom5_")
+    norm_mom5_df = _pairwise_transform(
+        wide_mom5,
+        wide_vol30,
+        lambda a, b: a / b,
+        "norm_mom5_",
     )
-    norm_mom10_df = wide_mom10.div(wide_vol30).rename(
-        columns=lambda c: c.replace("mom10_", "norm_mom10_")
+    norm_mom10_df = _pairwise_transform(
+        wide_mom10,
+        wide_vol30,
+        lambda a, b: a / b,
+        "norm_mom10_",
     )
 
     rank_ret = wide_ret.rank(axis=1, pct=True)
@@ -215,6 +244,11 @@ def build_feature_dataset(
     feature_wide = pd.concat(feature_frames, axis=1)
     feature_wide = feature_wide.replace([np.inf, -np.inf], np.nan)
     feature_wide = feature_wide.sort_index().dropna(how="any")
+    if feature_wide.empty:
+        raise ValueError(
+            "Feature generation produced zero usable rows after alignment and dropna. "
+            "This usually means one or more feature families are entirely NaN."
+        )
     feature_wide.index.name = "Date"
 
     output_csv_path.parent.mkdir(parents=True, exist_ok=True)

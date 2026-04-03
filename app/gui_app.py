@@ -426,7 +426,7 @@ class FXPipelineWindow(QMainWindow):
         QMessageBox.critical(self, "Pipeline Error", error_msg)
 
     def on_raw_download_completed(self, raw_csv_path: str) -> None:
-        self.progress_bar.setValue(50)
+        self.progress_bar.setValue(100)
         self.raw_data_path_label.setText(raw_csv_path)
         self.status_label.setText("Status: Raw Yahoo data downloaded")
         self.append_log(f"Raw data download completed: {raw_csv_path}")
