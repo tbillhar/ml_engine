@@ -10,7 +10,10 @@ REQUIRED_DATE_COLUMN = "Date"
 
 def load_csv(csv_path: str) -> pd.DataFrame:
     """Load a CSV file into a DataFrame."""
-    return pd.read_csv(csv_path)
+    df = pd.read_csv(csv_path)
+    if "Date" not in df.columns and "index" in df.columns:
+        df = df.rename(columns={"index": "Date"})
+    return df
 
 
 def validate_columns(df: pd.DataFrame, required_columns: list[str]) -> None:

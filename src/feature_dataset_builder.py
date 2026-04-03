@@ -215,6 +215,7 @@ def build_feature_dataset(
     feature_wide = pd.concat(feature_frames, axis=1)
     feature_wide = feature_wide.replace([np.inf, -np.inf], np.nan)
     feature_wide = feature_wide.sort_index().dropna(how="any")
+    feature_wide.index.name = "Date"
 
     output_csv_path.parent.mkdir(parents=True, exist_ok=True)
     feature_wide.reset_index().to_csv(output_csv_path, index=False)
