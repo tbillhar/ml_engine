@@ -22,8 +22,8 @@ def _rolling_avg_corr(
         if i < window:
             features.append([np.nan] * len(wide_ret.columns))
             continue
-        corr_mat = wide_ret.iloc[i - window:i].corr()
-        np.fill_diagonal(corr_mat.values, np.nan)
+        corr_mat = wide_ret.iloc[i - window:i].corr().copy()
+        np.fill_diagonal(corr_mat.to_numpy(copy=False), np.nan)
         features.append(corr_mat.mean(axis=1).values.tolist())
     return pd.DataFrame(
         features,
