@@ -3,12 +3,13 @@
 from pathlib import Path
 
 from src.config import (
+    CALIBRATION_DAYS,
+    FIT_DAYS,
     HORIZON,
     P_WIN_THRESHOLD,
     STEP_DAYS,
     TEST_DAYS,
     TRADING_DAYS_PER_YEAR,
-    TRAIN_DAYS,
     TRANSACTION_LOSS_PCT,
 )
 from src.pipeline_runner import run_pipeline
@@ -19,7 +20,8 @@ def main() -> None:
     output_dir = Path("outputs")
     stats_df, _ = run_pipeline(
         csv_path=csv_path,
-        train_days=TRAIN_DAYS,
+        fit_days=FIT_DAYS,
+        calibration_days=CALIBRATION_DAYS,
         test_days=TEST_DAYS,
         step_days=STEP_DAYS,
         horizon=HORIZON,

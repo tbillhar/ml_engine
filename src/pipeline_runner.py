@@ -8,6 +8,7 @@ from typing import Callable
 import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.ticker import PercentFormatter
+from sklearn.metrics import brier_score_loss
 
 from src.data_pipeline import load_csv, parse_and_sort_dates
 from src.feature_engineering import compute_future_returns
@@ -26,7 +27,8 @@ ProgressFn = Callable[[int], None] | None
 
 def run_pipeline(
     csv_path: str,
-    train_days: int,
+    fit_days: int,
+    calibration_days: int,
     test_days: int,
     step_days: int,
     horizon: int,
@@ -70,12 +72,14 @@ def run_pipeline(
 
     log(
         "Running walk-forward ensemble "
-        f"(train={train_days}, test={test_days}, step={step_days}, p_win_threshold={p_win_threshold})"
+        f"(fit={fit_days}, calibration={calibration_days}, test={test_days}, "
+        f"step={step_days}, p_win_threshold={p_win_threshold})"
     )
     set_progress(60)
     pred_df = run_walkforward_model(
         long_df,
-        train_days=train_days,
+        fit_days=fit_days,
+        calibration_days=calibration_days,
         test_days=test_days,
         step_days=step_days,
         transaction_loss_pct=transaction_loss_pct,
@@ -125,6 +129,57 @@ def run_pipeline(
     top5_stats = perf_stats(pnl_top5, trading_days_per_year=trading_days_per_year)
     eq_stats = perf_stats(pnl_eq, trading_days_per_year=trading_days_per_year)
 
+    log("Computing model correlation and ensemble benefit diagnostics")
+    model_cols = [
+        "pred_lgbm_shallow",
+        "pred_lgbm_base",
+        "pred_lgbm_deep",
+        "pred_rf",
+        "pred_logreg",
+        "pred_ensemble",
+    ]
+    correlation_df = pred_df[model_cols].corr()
+
+    diagnostic_rows = []
+    for model_col in model_cols:
+        stats = perf_stats(
+            compute_threshold_pnl(
+                pred_df,
+                pred_col=model_col,
+                p_win_threshold=p_win_threshold,
+                transaction_loss_pct=transaction_loss_pct,
+            ),
+            trading_days_per_year=trading_days_per_year,
+        )
+        diagnostic_rows.append(
+            {
+                "model": model_col,
+                "brier_score": brier_score_loss(pred_df["profit_target"], pred_df[model_col]),
+                "Annualized Return": stats["Annualized Return"],
+                "Sharpe": stats["Sharpe"],
+                "Trade Rate": stats["Trade Rate"],
+            }
+        )
+    model_diagnostics_df = pd.DataFrame(diagnostic_rows).sort_values("brier_score")
+    best_single = model_diagnostics_df[model_diagnostics_df["model"] != "pred_ensemble"].iloc[0]
+    ensemble_row = model_diagnostics_df[model_diagnostics_df["model"] == "pred_ensemble"].iloc[0]
+    ensemble_benefit_df = pd.DataFrame(
+        [
+            {
+                "metric": "Brier Score Improvement vs Best Single",
+                "value": float(best_single["brier_score"] - ensemble_row["brier_score"]),
+            },
+            {
+                "metric": "Annualized Return Improvement vs Best Single",
+                "value": float(ensemble_row["Annualized Return"] - best_single["Annualized Return"]),
+            },
+            {
+                "metric": "Sharpe Improvement vs Best Single",
+                "value": float(ensemble_row["Sharpe"] - best_single["Sharpe"]),
+            },
+        ]
+    )
+
     log("Saving CSV outputs")
     pred_df.to_csv(output_dir / "predictions.csv", index=False)
     pnl_threshold.to_csv(output_dir / "pnl_threshold.csv", index=False)
@@ -132,6 +187,9 @@ def run_pipeline(
     pnl_top3.to_csv(output_dir / "pnl_top3.csv", index=False)
     pnl_top5.to_csv(output_dir / "pnl_top5.csv", index=False)
     pnl_eq.to_csv(output_dir / "pnl_equal_weight.csv", index=False)
+    correlation_df.to_csv(output_dir / "model_prediction_correlation.csv")
+    model_diagnostics_df.to_csv(output_dir / "model_diagnostics.csv", index=False)
+    ensemble_benefit_df.to_csv(output_dir / "ensemble_benefit.csv", index=False)
 
     stats_df = pd.DataFrame(
         [
@@ -143,6 +201,11 @@ def run_pipeline(
         ]
     )
     stats_df.to_csv(output_dir / "performance_summary.csv", index=False)
+    log(
+        "Best single-model Brier: "
+        f"{best_single['model']}={best_single['brier_score']:.4f}; "
+        f"ensemble={ensemble_row['brier_score']:.4f}"
+    )
 
     log("Saving PnL plot")
     set_progress(90)

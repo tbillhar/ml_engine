@@ -9,13 +9,14 @@ from pathlib import Path
 import pandas as pd
 
 from src.config import (
+    CALIBRATION_DAYS,
     FEATURE_DATA_FILENAME,
+    FIT_DAYS,
     HORIZON,
     P_WIN_THRESHOLD,
     STEP_DAYS,
     TEST_DAYS,
     TRADING_DAYS_PER_YEAR,
-    TRAIN_DAYS,
     TRANSACTION_LOSS_PCT,
 )
 from src.pipeline_runner import run_pipeline
@@ -36,11 +37,18 @@ def parse_args() -> argparse.Namespace:
         help="Directory where per-run outputs and comparison CSVs are written.",
     )
     parser.add_argument(
-        "--train-days",
+        "--fit-days",
         nargs="+",
         type=int,
-        default=[TRAIN_DAYS],
-        help="One or more TRAIN_DAYS values.",
+        default=[FIT_DAYS],
+        help="One or more FIT_DAYS values.",
+    )
+    parser.add_argument(
+        "--calibration-days",
+        nargs="+",
+        type=int,
+        default=[CALIBRATION_DAYS],
+        help="One or more CALIBRATION_DAYS values.",
     )
     parser.add_argument(
         "--test-days",
@@ -89,7 +97,8 @@ def parse_args() -> argparse.Namespace:
 
 def format_run_name(params: dict[str, int | float]) -> str:
     return (
-        f"train{params['train_days']}_"
+        f"fit{params['fit_days']}_"
+        f"cal{params['calibration_days']}_"
         f"test{params['test_days']}_"
         f"step{params['step_days']}_"
         f"h{params['horizon']}_"
@@ -110,7 +119,8 @@ def main() -> None:
 
     combos = list(
         itertools.product(
-            args.train_days,
+            args.fit_days,
+            args.calibration_days,
             args.test_days,
             args.step_days,
             args.horizon,
@@ -126,13 +136,14 @@ def main() -> None:
 
     for idx, combo in enumerate(combos, start=1):
         params = {
-            "train_days": combo[0],
-            "test_days": combo[1],
-            "step_days": combo[2],
-            "horizon": combo[3],
-            "transaction_loss_pct": combo[4],
-            "trading_days_per_year": combo[5],
-            "p_win_threshold": combo[6],
+            "fit_days": combo[0],
+            "calibration_days": combo[1],
+            "test_days": combo[2],
+            "step_days": combo[3],
+            "horizon": combo[4],
+            "transaction_loss_pct": combo[5],
+            "trading_days_per_year": combo[6],
+            "p_win_threshold": combo[7],
         }
         run_name = format_run_name(params)
         run_dir = results_dir / run_name
@@ -144,7 +155,8 @@ def main() -> None:
         try:
             stats_df, plot_path = run_pipeline(
                 csv_path=str(csv_path),
-                train_days=params["train_days"],
+                fit_days=params["fit_days"],
+                calibration_days=params["calibration_days"],
                 test_days=params["test_days"],
                 step_days=params["step_days"],
                 horizon=params["horizon"],

@@ -37,14 +37,15 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from src.config import (
+    CALIBRATION_DAYS,
     FEATURE_DATA_FILENAME,
+    FIT_DAYS,
     HORIZON,
     P_WIN_THRESHOLD,
     RAW_DATA_FILENAME,
     STEP_DAYS,
     TEST_DAYS,
     TRADING_DAYS_PER_YEAR,
-    TRAIN_DAYS,
     TRANSACTION_LOSS_PCT,
 )
 from src.feature_dataset_builder import build_feature_dataset
@@ -63,7 +64,8 @@ class PipelineWorker(QObject):
     def __init__(
         self,
         csv_path: str,
-        train_days: int,
+        fit_days: int,
+        calibration_days: int,
         test_days: int,
         step_days: int,
         horizon: int,
@@ -74,7 +76,8 @@ class PipelineWorker(QObject):
     ) -> None:
         super().__init__()
         self.csv_path = csv_path
-        self.train_days = train_days
+        self.fit_days = fit_days
+        self.calibration_days = calibration_days
         self.test_days = test_days
         self.step_days = step_days
         self.horizon = horizon
@@ -87,7 +90,8 @@ class PipelineWorker(QObject):
         try:
             stats_df, plot_path = run_pipeline(
                 csv_path=self.csv_path,
-                train_days=self.train_days,
+                fit_days=self.fit_days,
+                calibration_days=self.calibration_days,
                 test_days=self.test_days,
                 step_days=self.step_days,
                 horizon=self.horizon,
@@ -176,7 +180,8 @@ class FXPipelineWindow(QMainWindow):
         self.build_features_btn = QPushButton("Build Feature CSV")
         self.build_features_btn.clicked.connect(self.start_feature_build)
 
-        self.train_input = QLineEdit(str(TRAIN_DAYS))
+        self.fit_input = QLineEdit(str(FIT_DAYS))
+        self.calibration_input = QLineEdit(str(CALIBRATION_DAYS))
         self.test_input = QLineEdit(str(TEST_DAYS))
         self.step_input = QLineEdit(str(STEP_DAYS))
         self.horizon_input = QLineEdit(str(HORIZON))
@@ -222,7 +227,8 @@ class FXPipelineWindow(QMainWindow):
         data_form.addRow("FEATURE_CSV", self.feature_data_path_label)
 
         params_form = QFormLayout()
-        params_form.addRow("TRAIN_DAYS", self.train_input)
+        params_form.addRow("FIT_DAYS", self.fit_input)
+        params_form.addRow("CALIBRATION_DAYS", self.calibration_input)
         params_form.addRow("TEST_DAYS", self.test_input)
         params_form.addRow("STEP_DAYS", self.step_input)
         params_form.addRow("HORIZON", self.horizon_input)
@@ -370,7 +376,8 @@ class FXPipelineWindow(QMainWindow):
             if not Path(csv_path).exists():
                 raise ValueError(f"CSV file does not exist: {csv_path}")
 
-            train_days = self._read_int(self.train_input, "TRAIN_DAYS")
+            fit_days = self._read_int(self.fit_input, "FIT_DAYS")
+            calibration_days = self._read_int(self.calibration_input, "CALIBRATION_DAYS")
             test_days = self._read_int(self.test_input, "TEST_DAYS")
             step_days = self._read_int(self.step_input, "STEP_DAYS")
             horizon = self._read_int(self.horizon_input, "HORIZON")
@@ -403,7 +410,8 @@ class FXPipelineWindow(QMainWindow):
         self.pipeline_thread = QThread()
         self.pipeline_worker = PipelineWorker(
             csv_path=csv_path,
-            train_days=train_days,
+            fit_days=fit_days,
+            calibration_days=calibration_days,
             test_days=test_days,
             step_days=step_days,
             horizon=horizon,
