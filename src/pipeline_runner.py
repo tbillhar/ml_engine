@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 from matplotlib.ticker import PercentFormatter
 from sklearn.metrics import brier_score_loss
@@ -76,7 +77,7 @@ def run_pipeline(
         f"step={step_days}, p_win_threshold={p_win_threshold})"
     )
     set_progress(60)
-    pred_df = run_walkforward_model(
+    pred_df, window_diag_df = run_walkforward_model(
         long_df,
         fit_days=fit_days,
         calibration_days=calibration_days,
@@ -139,6 +140,9 @@ def run_pipeline(
         "pred_ensemble",
     ]
     correlation_df = pred_df[model_cols].corr()
+    spearman_correlation_df = pred_df[model_cols].corr(method="spearman")
+    threshold_decisions = pred_df[model_cols].gt(p_win_threshold).astype(int)
+    threshold_agreement_df = threshold_decisions.corr()
 
     diagnostic_rows = []
     for model_col in model_cols:
@@ -155,6 +159,9 @@ def run_pipeline(
             {
                 "model": model_col,
                 "brier_score": brier_score_loss(pred_df["profit_target"], pred_df[model_col]),
+                "mean_probability": float(pred_df[model_col].mean()),
+                "std_probability": float(pred_df[model_col].std()),
+                "trade_fraction_above_threshold": float((pred_df[model_col] > p_win_threshold).mean()),
                 "Annualized Return": stats["Annualized Return"],
                 "Sharpe": stats["Sharpe"],
                 "Trade Rate": stats["Trade Rate"],
@@ -182,12 +189,15 @@ def run_pipeline(
 
     log("Saving CSV outputs")
     pred_df.to_csv(output_dir / "predictions.csv", index=False)
+    window_diag_df.to_csv(output_dir / "window_model_diagnostics.csv", index=False)
     pnl_threshold.to_csv(output_dir / "pnl_threshold.csv", index=False)
     pnl_top1.to_csv(output_dir / "pnl_top1.csv", index=False)
     pnl_top3.to_csv(output_dir / "pnl_top3.csv", index=False)
     pnl_top5.to_csv(output_dir / "pnl_top5.csv", index=False)
     pnl_eq.to_csv(output_dir / "pnl_equal_weight.csv", index=False)
     correlation_df.to_csv(output_dir / "model_prediction_correlation.csv")
+    spearman_correlation_df.to_csv(output_dir / "model_prediction_rank_correlation.csv")
+    threshold_agreement_df.to_csv(output_dir / "model_threshold_agreement.csv")
     model_diagnostics_df.to_csv(output_dir / "model_diagnostics.csv", index=False)
     ensemble_benefit_df.to_csv(output_dir / "ensemble_benefit.csv", index=False)
 
@@ -205,6 +215,10 @@ def run_pipeline(
         "Best single-model Brier: "
         f"{best_single['model']}={best_single['brier_score']:.4f}; "
         f"ensemble={ensemble_row['brier_score']:.4f}"
+    )
+    log(
+        "Average pairwise prediction correlation: "
+        f"{correlation_df.where(~np.eye(len(correlation_df), dtype=bool)).stack().mean():.4f}"
     )
 
     log("Saving PnL plot")

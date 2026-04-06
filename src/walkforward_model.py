@@ -146,8 +146,8 @@ def run_walkforward_model(
     step_days: int,
     transaction_loss_pct: float,
     log_fn=None,
-) -> pd.DataFrame:
-    """Run walk-forward calibrated classifier ensemble and return predictions."""
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Run walk-forward calibrated classifier ensemble and return predictions and window diagnostics."""
     def log(message: str) -> None:
         if log_fn:
             log_fn(message)
@@ -160,6 +160,7 @@ def run_walkforward_model(
     all_dates = sorted(long_df["Date"].unique())
 
     all_test_chunks = []
+    window_diagnostics = []
     window_splits = list(sliding_windows(all_dates, fit_days, calibration_days, test_days, step_days))
 
     for window_idx, (fit_dates, calibration_dates, test_dates) in enumerate(window_splits, start=1):
@@ -179,6 +180,7 @@ def run_walkforward_model(
         test_sub = test_sub.copy()
         model_preds: list[np.ndarray] = []
         calibration_preds: dict[str, np.ndarray] = {}
+        calibration_briers: dict[str, float] = {}
         for model_name, base_model in build_models().items():
             model = clone(base_model)
             model.fit(X_train, y_train)
@@ -186,21 +188,57 @@ def run_walkforward_model(
             calibrator = fit_platt_calibrator(calibration_scores, y_calibration)
             calibration_probs = apply_calibrator(calibrator, calibration_scores)
             calibration_preds[model_name] = calibration_probs
+            calibration_briers[model_name] = brier_score_loss(y_calibration, calibration_probs)
             test_scores = predict_positive_scores(model, X_test)
             calibrated_probs = apply_calibrator(calibrator, test_scores)
             test_sub[f"pred_{model_name}"] = calibrated_probs
             model_preds.append(calibrated_probs)
 
         weights = inverse_brier_weights(calibration_preds, y_calibration)
+        ensemble_calibration_pred = sum(
+            calibration_preds[model_name] * weights[model_name]
+            for model_name in weights
+        )
+        ensemble_calibration_brier = brier_score_loss(y_calibration, ensemble_calibration_pred)
         log(
             "Window weights: "
-            + ", ".join(f"{model_name}={weight:.3f}" for model_name, weight in weights.items())
+            + ", ".join(
+                f"{model_name}={weights[model_name]:.6f} (brier={calibration_briers[model_name]:.6f})"
+                for model_name in weights
+            )
+            + f"; ensemble_brier={ensemble_calibration_brier:.6f}"
         )
         ensemble_pred = sum(test_sub[f"pred_{model_name}"] * weights[model_name] for model_name in weights)
         test_sub["pred_ensemble"] = ensemble_pred
+        test_sub["window_id"] = window_idx
+
+        for model_name in weights:
+            window_diagnostics.append(
+                {
+                    "window_id": window_idx,
+                    "model": model_name,
+                    "fit_dates": len(fit_dates),
+                    "calibration_dates": len(calibration_dates),
+                    "test_dates": len(test_dates),
+                    "weight": float(weights[model_name]),
+                    "calibration_brier": float(calibration_briers[model_name]),
+                }
+            )
+        window_diagnostics.append(
+            {
+                "window_id": window_idx,
+                "model": "pred_ensemble",
+                "fit_dates": len(fit_dates),
+                "calibration_dates": len(calibration_dates),
+                "test_dates": len(test_dates),
+                "weight": 1.0,
+                "calibration_brier": float(ensemble_calibration_brier),
+            }
+        )
         all_test_chunks.append(
             test_sub[
                 [
+                    "window_id",
                     "Date",
                     "pair",
                     "next_ret",
@@ -220,4 +258,5 @@ def run_walkforward_model(
 
     pred_df = pd.concat(all_test_chunks, ignore_index=True)
     pred_df = pred_df.sort_values(["Date", "pair"]).reset_index(drop=True)
-    return pred_df
+    window_diag_df = pd.DataFrame(window_diagnostics)
+    return pred_df, window_diag_df
