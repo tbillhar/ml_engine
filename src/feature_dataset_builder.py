@@ -58,11 +58,12 @@ def _build_rolling_pca_features(
 
     for i in range(window, len(wide_ret)):
         hist = wide_ret.iloc[i - window:i]
-        if hist.isna().any().any():
+        current_row = wide_ret.iloc[[i]]
+        if hist.isna().any().any() or current_row.isna().any().any():
             continue
         scaled = scaler.fit_transform(hist.values)
         pca.fit(scaled)
-        current_scaled = scaler.transform(wide_ret.iloc[[i]].values)
+        current_scaled = scaler.transform(current_row.values)
         transformed = pca.transform(current_scaled)[0]
         pc_values[i, :] = transformed
         explained_values[i, :] = pca.explained_variance_ratio_
