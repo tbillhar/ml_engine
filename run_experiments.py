@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.config import (
+    EV_THRESHOLD_PCT,
     FEATURE_DATA_FILENAME,
     HORIZON,
     STEP_DAYS,
@@ -76,6 +77,13 @@ def parse_args() -> argparse.Namespace:
         default=[TRADING_DAYS_PER_YEAR],
         help="One or more TRADING_DAYS_PER_YEAR values.",
     )
+    parser.add_argument(
+        "--ev-threshold-pct",
+        nargs="+",
+        type=float,
+        default=[EV_THRESHOLD_PCT],
+        help="One or more EV threshold percentages, entered like 0.05 for 0.05%%.",
+    )
     return parser.parse_args()
 
 
@@ -86,7 +94,8 @@ def format_run_name(params: dict[str, int | float]) -> str:
         f"step{params['step_days']}_"
         f"h{params['horizon']}_"
         f"cost{params['transaction_loss_pct']}_"
-        f"tdpy{params['trading_days_per_year']}"
+        f"tdpy{params['trading_days_per_year']}_"
+        f"ev{params['ev_threshold_pct']}"
     )
 
 
@@ -107,6 +116,7 @@ def main() -> None:
             args.horizon,
             args.transaction_loss_pct,
             args.trading_days_per_year,
+            args.ev_threshold_pct,
         )
     )
     print(f"Running {len(combos)} experiment(s) using {csv_path.resolve()}")
@@ -122,6 +132,7 @@ def main() -> None:
             "horizon": combo[3],
             "transaction_loss_pct": combo[4],
             "trading_days_per_year": combo[5],
+            "ev_threshold_pct": combo[6],
         }
         run_name = format_run_name(params)
         run_dir = results_dir / run_name
@@ -139,6 +150,7 @@ def main() -> None:
                 horizon=params["horizon"],
                 transaction_loss_pct=params["transaction_loss_pct"],
                 trading_days_per_year=params["trading_days_per_year"],
+                ev_threshold_pct=params["ev_threshold_pct"],
                 output_dir=run_dir,
                 log_fn=log,
             )

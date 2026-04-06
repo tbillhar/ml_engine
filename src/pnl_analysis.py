@@ -1,30 +1,63 @@
-"""PnL computation and summary statistics for FX ranking outputs."""
+"""PnL computation and summary statistics for EV-threshold strategy outputs."""
 
 from __future__ import annotations
 
+import math
 import numpy as np
 import pandas as pd
 
 
-def compute_topK_pnl(
+def _portfolio_turnover(
+    previous_weights: dict[str, float],
+    current_weights: dict[str, float],
+) -> float:
+    """Return one-way turnover between two equal-weight baskets."""
+    all_pairs = set(previous_weights) | set(current_weights)
+    return 0.5 * sum(abs(current_weights.get(pair, 0.0) - previous_weights.get(pair, 0.0)) for pair in all_pairs)
+
+
+def compute_threshold_pnl(
     df: pd.DataFrame,
-    K: int,
+    pred_col: str,
+    ev_threshold_pct: float,
     transaction_loss_pct: float = 0.0,
+    max_positions: int | None = None,
 ) -> pd.DataFrame:
-    """Daily PnL from Top-K predictions using next-day realized returns."""
+    """Daily PnL from EV-threshold predictions using next-day realized returns."""
     rows = []
     transaction_loss = transaction_loss_pct / 100.0
-    previous_pairs: set[str] | None = None
+    ev_threshold = ev_threshold_pct / 100.0
+    previous_weights: dict[str, float] = {}
     for d, grp in df.groupby("Date", sort=True):
-        chosen = grp.sort_values("pred", ascending=False).head(K)
-        current_pairs = set(chosen["pair"])
-        if previous_pairs is None:
-            turnover = 1.0
+        eligible = grp[grp[pred_col] > ev_threshold].sort_values(pred_col, ascending=False)
+        if max_positions is not None:
+            eligible = eligible.head(max_positions)
+
+        if eligible.empty:
+            current_weights: dict[str, float] = {}
+            gross_return = 0.0
+            trade_count = 0
+            avg_predicted_ev = np.nan
         else:
-            turnover = len(current_pairs - previous_pairs) / K
-        pnl = chosen["next_ret"].mean() - (transaction_loss * turnover)
-        rows.append({"Date": d, "pnl": pnl})
-        previous_pairs = current_pairs
+            weight = 1.0 / len(eligible)
+            current_weights = {pair: weight for pair in eligible["pair"]}
+            gross_return = float(eligible["next_ret"].mean())
+            trade_count = int(len(eligible))
+            avg_predicted_ev = float(eligible[pred_col].mean())
+
+        turnover = _portfolio_turnover(previous_weights, current_weights)
+        pnl = gross_return - (transaction_loss * turnover)
+        rows.append(
+            {
+                "Date": d,
+                "pnl": pnl,
+                "gross_return": gross_return,
+                "turnover": turnover,
+                "trade_count": trade_count,
+                "avg_predicted_ev": avg_predicted_ev,
+            }
+        )
+        previous_weights = current_weights
     return pd.DataFrame(rows).sort_values("Date")
 
 
@@ -35,12 +68,23 @@ def compute_equal_weight_pnl(
     """Equal-weight daily benchmark PnL using next-day realized returns."""
     rows = []
     transaction_loss = transaction_loss_pct / 100.0
-    first_row = True
+    previous_weights: dict[str, float] = {}
     for d, grp in df.groupby("Date", sort=True):
-        # The full-universe equal-weight basket has no constituent turnover after entry.
-        pnl = grp["next_ret"].mean() - (transaction_loss if first_row else 0.0)
-        rows.append({"Date": d, "pnl": pnl})
-        first_row = False
+        weight = 1.0 / len(grp)
+        current_weights = {pair: weight for pair in grp["pair"]}
+        turnover = _portfolio_turnover(previous_weights, current_weights)
+        pnl = float(grp["next_ret"].mean()) - (transaction_loss * turnover)
+        rows.append(
+            {
+                "Date": d,
+                "pnl": pnl,
+                "gross_return": float(grp["next_ret"].mean()),
+                "turnover": turnover,
+                "trade_count": int(len(grp)),
+                "avg_predicted_ev": np.nan,
+            }
+        )
+        previous_weights = current_weights
     return pd.DataFrame(rows).sort_values("Date")
 
 
@@ -71,9 +115,22 @@ def perf_stats(df: pd.DataFrame, trading_days_per_year: int) -> dict[str, float]
     ann_ret = (1 + cum) ** (trading_days_per_year / n_periods) - 1 if n_periods else np.nan
     ann_vol = pnl.std() * np.sqrt(trading_days_per_year)
     sharpe = ann_ret / ann_vol if ann_vol > 0 else np.nan
+    avg_turnover = float(df["turnover"].mean()) if "turnover" in df.columns and not df.empty else np.nan
+    avg_trade_count = float(df["trade_count"].mean()) if "trade_count" in df.columns and not df.empty else np.nan
+    trade_days = int((df["trade_count"] > 0).sum()) if "trade_count" in df.columns else 0
+    trade_rate = trade_days / n_periods if n_periods else np.nan
+    avg_predicted_ev = (
+        float(df["avg_predicted_ev"].dropna().mean())
+        if "avg_predicted_ev" in df.columns and not df["avg_predicted_ev"].dropna().empty
+        else np.nan
+    )
     return {
         "Annualized Return": ann_ret,
         "Annualized Vol": ann_vol,
         "Sharpe": sharpe,
         "Cumulative Return": cum,
+        "Avg Turnover": avg_turnover,
+        "Avg Trades/Day": avg_trade_count,
+        "Trade Rate": trade_rate,
+        "Avg Predicted EV": avg_predicted_ev,
     }

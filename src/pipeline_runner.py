@@ -14,7 +14,7 @@ from src.feature_engineering import compute_future_returns
 from src.long_format import build_long
 from src.pnl_analysis import (
     compute_equal_weight_pnl,
-    compute_topK_pnl,
+    compute_threshold_pnl,
     cumulative_annualized_curve,
     perf_stats,
 )
@@ -32,6 +32,7 @@ def run_pipeline(
     horizon: int,
     transaction_loss_pct: float,
     trading_days_per_year: int,
+    ev_threshold_pct: float,
     output_dir: Path,
     log_fn: LogFn = None,
     progress_fn: ProgressFn = None,
@@ -64,10 +65,11 @@ def run_pipeline(
     log("Building long-format ranking table")
     set_progress(40)
     long_df = build_long(df, pairs)
+    long_df["ev_target"] = long_df["next_ret"] - (transaction_loss_pct / 100.0)
 
     log(
-        "Running walk-forward model "
-        f"(train={train_days}, test={test_days}, step={step_days})"
+        "Running walk-forward ensemble "
+        f"(train={train_days}, test={test_days}, step={step_days}, ev_threshold={ev_threshold_pct}%)"
     )
     set_progress(60)
     pred_df = run_walkforward_model(
@@ -75,20 +77,47 @@ def run_pipeline(
         train_days=train_days,
         test_days=test_days,
         step_days=step_days,
+        transaction_loss_pct=transaction_loss_pct,
     )
 
-    log("Computing daily mark-to-market PnL series")
+    log("Computing daily mark-to-market EV-threshold PnL series")
     set_progress(75)
-    pnl_top1 = compute_topK_pnl(pred_df, 1, transaction_loss_pct=transaction_loss_pct)
-    pnl_top3 = compute_topK_pnl(pred_df, 3, transaction_loss_pct=transaction_loss_pct)
-    pnl_top5 = compute_topK_pnl(pred_df, 5, transaction_loss_pct=transaction_loss_pct)
+    pnl_threshold = compute_threshold_pnl(
+        pred_df,
+        pred_col="pred_ensemble",
+        ev_threshold_pct=ev_threshold_pct,
+        transaction_loss_pct=transaction_loss_pct,
+    )
+    pnl_top1 = compute_threshold_pnl(
+        pred_df,
+        pred_col="pred_ensemble",
+        ev_threshold_pct=ev_threshold_pct,
+        transaction_loss_pct=transaction_loss_pct,
+        max_positions=1,
+    )
+    pnl_top3 = compute_threshold_pnl(
+        pred_df,
+        pred_col="pred_ensemble",
+        ev_threshold_pct=ev_threshold_pct,
+        transaction_loss_pct=transaction_loss_pct,
+        max_positions=3,
+    )
+    pnl_top5 = compute_threshold_pnl(
+        pred_df,
+        pred_col="pred_ensemble",
+        ev_threshold_pct=ev_threshold_pct,
+        transaction_loss_pct=transaction_loss_pct,
+        max_positions=5,
+    )
     pnl_eq = compute_equal_weight_pnl(pred_df, transaction_loss_pct=transaction_loss_pct)
 
+    cum_threshold = cumulative_annualized_curve(pnl_threshold, trading_days_per_year=trading_days_per_year)
     cum1 = cumulative_annualized_curve(pnl_top1, trading_days_per_year=trading_days_per_year)
     cum3 = cumulative_annualized_curve(pnl_top3, trading_days_per_year=trading_days_per_year)
     cum5 = cumulative_annualized_curve(pnl_top5, trading_days_per_year=trading_days_per_year)
     cum_eq = cumulative_annualized_curve(pnl_eq, trading_days_per_year=trading_days_per_year)
 
+    threshold_stats = perf_stats(pnl_threshold, trading_days_per_year=trading_days_per_year)
     top1_stats = perf_stats(pnl_top1, trading_days_per_year=trading_days_per_year)
     top3_stats = perf_stats(pnl_top3, trading_days_per_year=trading_days_per_year)
     top5_stats = perf_stats(pnl_top5, trading_days_per_year=trading_days_per_year)
@@ -96,6 +125,7 @@ def run_pipeline(
 
     log("Saving CSV outputs")
     pred_df.to_csv(output_dir / "predictions.csv", index=False)
+    pnl_threshold.to_csv(output_dir / "pnl_threshold.csv", index=False)
     pnl_top1.to_csv(output_dir / "pnl_top1.csv", index=False)
     pnl_top3.to_csv(output_dir / "pnl_top3.csv", index=False)
     pnl_top5.to_csv(output_dir / "pnl_top5.csv", index=False)
@@ -103,9 +133,10 @@ def run_pipeline(
 
     stats_df = pd.DataFrame(
         [
-            {"strategy": "Top-1", **top1_stats},
-            {"strategy": "Top-3", **top3_stats},
-            {"strategy": "Top-5", **top5_stats},
+            {"strategy": "EV Threshold", **threshold_stats},
+            {"strategy": "EV Threshold Top-1", **top1_stats},
+            {"strategy": "EV Threshold Top-3", **top3_stats},
+            {"strategy": "EV Threshold Top-5", **top5_stats},
             {"strategy": "Equal-weight", **eq_stats},
         ]
     )
@@ -115,9 +146,10 @@ def run_pipeline(
     set_progress(90)
     plot_path = output_dir / "pnl_curves.png"
     plt.figure(figsize=(12, 6))
-    plt.plot(cum1["Date"], cum1["cum_ann"], label="Top-1", linewidth=2.5)
-    plt.plot(cum3["Date"], cum3["cum_ann"], label="Top-3", linewidth=2.2)
-    plt.plot(cum5["Date"], cum5["cum_ann"], label="Top-5", linewidth=2.0)
+    plt.plot(cum_threshold["Date"], cum_threshold["cum_ann"], label="EV Threshold", linewidth=2.6)
+    plt.plot(cum1["Date"], cum1["cum_ann"], label="Threshold Top-1", linewidth=2.4)
+    plt.plot(cum3["Date"], cum3["cum_ann"], label="Threshold Top-3", linewidth=2.2)
+    plt.plot(cum5["Date"], cum5["cum_ann"], label="Threshold Top-5", linewidth=2.0)
     plt.plot(
         cum_eq["Date"],
         cum_eq["cum_ann"],
@@ -125,7 +157,7 @@ def run_pipeline(
         linestyle="--",
         linewidth=1.8,
     )
-    plt.title("Cumulative Annualized Return")
+    plt.title("Cumulative Annualized Return From Ensemble EV Decisions")
     plt.xlabel("Date")
     plt.ylabel("Cumulative Annualized Return %")
     plt.gca().yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
