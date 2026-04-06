@@ -32,7 +32,7 @@ def run_pipeline(
     horizon: int,
     transaction_loss_pct: float,
     trading_days_per_year: int,
-    ev_threshold_pct: float,
+    p_win_threshold: float,
     output_dir: Path,
     log_fn: LogFn = None,
     progress_fn: ProgressFn = None,
@@ -66,10 +66,11 @@ def run_pipeline(
     set_progress(40)
     long_df = build_long(df, pairs)
     long_df["ev_target"] = long_df["next_ret"] - (transaction_loss_pct / 100.0)
+    long_df["profit_target"] = (long_df["ev_target"] > 0).astype(int)
 
     log(
         "Running walk-forward ensemble "
-        f"(train={train_days}, test={test_days}, step={step_days}, ev_threshold={ev_threshold_pct}%)"
+        f"(train={train_days}, test={test_days}, step={step_days}, p_win_threshold={p_win_threshold})"
     )
     set_progress(60)
     pred_df = run_walkforward_model(
@@ -80,32 +81,32 @@ def run_pipeline(
         transaction_loss_pct=transaction_loss_pct,
     )
 
-    log("Computing daily mark-to-market EV-threshold PnL series")
+    log("Computing daily mark-to-market probability-threshold PnL series")
     set_progress(75)
     pnl_threshold = compute_threshold_pnl(
         pred_df,
         pred_col="pred_ensemble",
-        ev_threshold_pct=ev_threshold_pct,
+        p_win_threshold=p_win_threshold,
         transaction_loss_pct=transaction_loss_pct,
     )
     pnl_top1 = compute_threshold_pnl(
         pred_df,
         pred_col="pred_ensemble",
-        ev_threshold_pct=ev_threshold_pct,
+        p_win_threshold=p_win_threshold,
         transaction_loss_pct=transaction_loss_pct,
         max_positions=1,
     )
     pnl_top3 = compute_threshold_pnl(
         pred_df,
         pred_col="pred_ensemble",
-        ev_threshold_pct=ev_threshold_pct,
+        p_win_threshold=p_win_threshold,
         transaction_loss_pct=transaction_loss_pct,
         max_positions=3,
     )
     pnl_top5 = compute_threshold_pnl(
         pred_df,
         pred_col="pred_ensemble",
-        ev_threshold_pct=ev_threshold_pct,
+        p_win_threshold=p_win_threshold,
         transaction_loss_pct=transaction_loss_pct,
         max_positions=5,
     )
@@ -133,10 +134,10 @@ def run_pipeline(
 
     stats_df = pd.DataFrame(
         [
-            {"strategy": "EV Threshold", **threshold_stats},
-            {"strategy": "EV Threshold Top-1", **top1_stats},
-            {"strategy": "EV Threshold Top-3", **top3_stats},
-            {"strategy": "EV Threshold Top-5", **top5_stats},
+            {"strategy": "P(Win) Threshold", **threshold_stats},
+            {"strategy": "P(Win) Threshold Top-1", **top1_stats},
+            {"strategy": "P(Win) Threshold Top-3", **top3_stats},
+            {"strategy": "P(Win) Threshold Top-5", **top5_stats},
             {"strategy": "Equal-weight", **eq_stats},
         ]
     )
@@ -146,10 +147,10 @@ def run_pipeline(
     set_progress(90)
     plot_path = output_dir / "pnl_curves.png"
     plt.figure(figsize=(12, 6))
-    plt.plot(cum_threshold["Date"], cum_threshold["cum_ann"], label="EV Threshold", linewidth=2.6)
-    plt.plot(cum1["Date"], cum1["cum_ann"], label="Threshold Top-1", linewidth=2.4)
-    plt.plot(cum3["Date"], cum3["cum_ann"], label="Threshold Top-3", linewidth=2.2)
-    plt.plot(cum5["Date"], cum5["cum_ann"], label="Threshold Top-5", linewidth=2.0)
+    plt.plot(cum_threshold["Date"], cum_threshold["cum_ann"], label="P(Win) Threshold", linewidth=2.6)
+    plt.plot(cum1["Date"], cum1["cum_ann"], label="P(Win) Top-1", linewidth=2.4)
+    plt.plot(cum3["Date"], cum3["cum_ann"], label="P(Win) Top-3", linewidth=2.2)
+    plt.plot(cum5["Date"], cum5["cum_ann"], label="P(Win) Top-5", linewidth=2.0)
     plt.plot(
         cum_eq["Date"],
         cum_eq["cum_ann"],
@@ -157,7 +158,7 @@ def run_pipeline(
         linestyle="--",
         linewidth=1.8,
     )
-    plt.title("Cumulative Annualized Return From Ensemble EV Decisions")
+    plt.title("Cumulative Annualized Return From Calibrated P(Win) Decisions")
     plt.xlabel("Date")
     plt.ylabel("Cumulative Annualized Return %")
     plt.gca().yaxis.set_major_formatter(PercentFormatter(xmax=1.0))

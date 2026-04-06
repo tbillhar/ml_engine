@@ -9,9 +9,9 @@ from pathlib import Path
 import pandas as pd
 
 from src.config import (
-    EV_THRESHOLD_PCT,
     FEATURE_DATA_FILENAME,
     HORIZON,
+    P_WIN_THRESHOLD,
     STEP_DAYS,
     TEST_DAYS,
     TRADING_DAYS_PER_YEAR,
@@ -78,11 +78,11 @@ def parse_args() -> argparse.Namespace:
         help="One or more TRADING_DAYS_PER_YEAR values.",
     )
     parser.add_argument(
-        "--ev-threshold-pct",
+        "--p-win-threshold",
         nargs="+",
         type=float,
-        default=[EV_THRESHOLD_PCT],
-        help="One or more EV threshold percentages, entered like 0.05 for 0.05%%.",
+        default=[P_WIN_THRESHOLD],
+        help="One or more calibrated win-probability thresholds between 0 and 1.",
     )
     return parser.parse_args()
 
@@ -95,7 +95,7 @@ def format_run_name(params: dict[str, int | float]) -> str:
         f"h{params['horizon']}_"
         f"cost{params['transaction_loss_pct']}_"
         f"tdpy{params['trading_days_per_year']}_"
-        f"ev{params['ev_threshold_pct']}"
+        f"pwin{params['p_win_threshold']}"
     )
 
 
@@ -116,7 +116,7 @@ def main() -> None:
             args.horizon,
             args.transaction_loss_pct,
             args.trading_days_per_year,
-            args.ev_threshold_pct,
+            args.p_win_threshold,
         )
     )
     print(f"Running {len(combos)} experiment(s) using {csv_path.resolve()}")
@@ -132,7 +132,7 @@ def main() -> None:
             "horizon": combo[3],
             "transaction_loss_pct": combo[4],
             "trading_days_per_year": combo[5],
-            "ev_threshold_pct": combo[6],
+            "p_win_threshold": combo[6],
         }
         run_name = format_run_name(params)
         run_dir = results_dir / run_name
@@ -150,7 +150,7 @@ def main() -> None:
                 horizon=params["horizon"],
                 transaction_loss_pct=params["transaction_loss_pct"],
                 trading_days_per_year=params["trading_days_per_year"],
-                ev_threshold_pct=params["ev_threshold_pct"],
+                p_win_threshold=params["p_win_threshold"],
                 output_dir=run_dir,
                 log_fn=log,
             )

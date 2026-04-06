@@ -1,4 +1,4 @@
-"""PnL computation and summary statistics for EV-threshold strategy outputs."""
+"""PnL computation and summary statistics for probability-threshold strategy outputs."""
 
 from __future__ import annotations
 
@@ -19,17 +19,16 @@ def _portfolio_turnover(
 def compute_threshold_pnl(
     df: pd.DataFrame,
     pred_col: str,
-    ev_threshold_pct: float,
+    p_win_threshold: float,
     transaction_loss_pct: float = 0.0,
     max_positions: int | None = None,
 ) -> pd.DataFrame:
-    """Daily PnL from EV-threshold predictions using next-day realized returns."""
+    """Daily PnL from probability-threshold predictions using next-day returns."""
     rows = []
     transaction_loss = transaction_loss_pct / 100.0
-    ev_threshold = ev_threshold_pct / 100.0
     previous_weights: dict[str, float] = {}
     for d, grp in df.groupby("Date", sort=True):
-        eligible = grp[grp[pred_col] > ev_threshold].sort_values(pred_col, ascending=False)
+        eligible = grp[grp[pred_col] > p_win_threshold].sort_values(pred_col, ascending=False)
         if max_positions is not None:
             eligible = eligible.head(max_positions)
 
@@ -37,13 +36,13 @@ def compute_threshold_pnl(
             current_weights: dict[str, float] = {}
             gross_return = 0.0
             trade_count = 0
-            avg_predicted_ev = np.nan
+            avg_predicted_prob = np.nan
         else:
             weight = 1.0 / len(eligible)
             current_weights = {pair: weight for pair in eligible["pair"]}
             gross_return = float(eligible["next_ret"].mean())
             trade_count = int(len(eligible))
-            avg_predicted_ev = float(eligible[pred_col].mean())
+            avg_predicted_prob = float(eligible[pred_col].mean())
 
         turnover = _portfolio_turnover(previous_weights, current_weights)
         pnl = gross_return - (transaction_loss * turnover)
@@ -54,7 +53,7 @@ def compute_threshold_pnl(
                 "gross_return": gross_return,
                 "turnover": turnover,
                 "trade_count": trade_count,
-                "avg_predicted_ev": avg_predicted_ev,
+                "avg_predicted_prob": avg_predicted_prob,
             }
         )
         previous_weights = current_weights
@@ -81,7 +80,7 @@ def compute_equal_weight_pnl(
                 "gross_return": float(grp["next_ret"].mean()),
                 "turnover": turnover,
                 "trade_count": int(len(grp)),
-                "avg_predicted_ev": np.nan,
+                "avg_predicted_prob": np.nan,
             }
         )
         previous_weights = current_weights
@@ -119,9 +118,9 @@ def perf_stats(df: pd.DataFrame, trading_days_per_year: int) -> dict[str, float]
     avg_trade_count = float(df["trade_count"].mean()) if "trade_count" in df.columns and not df.empty else np.nan
     trade_days = int((df["trade_count"] > 0).sum()) if "trade_count" in df.columns else 0
     trade_rate = trade_days / n_periods if n_periods else np.nan
-    avg_predicted_ev = (
-        float(df["avg_predicted_ev"].dropna().mean())
-        if "avg_predicted_ev" in df.columns and not df["avg_predicted_ev"].dropna().empty
+    avg_predicted_prob = (
+        float(df["avg_predicted_prob"].dropna().mean())
+        if "avg_predicted_prob" in df.columns and not df["avg_predicted_prob"].dropna().empty
         else np.nan
     )
     return {
@@ -132,5 +131,5 @@ def perf_stats(df: pd.DataFrame, trading_days_per_year: int) -> dict[str, float]
         "Avg Turnover": avg_turnover,
         "Avg Trades/Day": avg_trade_count,
         "Trade Rate": trade_rate,
-        "Avg Predicted EV": avg_predicted_ev,
+        "Avg Predicted P(Win)": avg_predicted_prob,
     }
