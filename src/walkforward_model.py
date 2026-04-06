@@ -13,6 +13,12 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
+PRIMARY_ENSEMBLE_WEIGHTS = {
+    "lgbm_deep": 0.55,
+    "logreg": 0.30,
+    "rf": 0.15,
+}
+
 
 def sliding_windows(dates, fit_len: int, calibration_len: int, test_len: int, step: int):
     """Yield (fit_dates, calibration_dates, test_dates) for rolling windows."""
@@ -138,6 +144,15 @@ def inverse_brier_weights(
     return {model_name: score / total for model_name, score in inv_scores.items()}
 
 
+def primary_ensemble_weights(model_names: list[str]) -> dict[str, float]:
+    """Return normalized fixed ensemble weights for the primary live ensemble."""
+    active = {name: PRIMARY_ENSEMBLE_WEIGHTS[name] for name in model_names if name in PRIMARY_ENSEMBLE_WEIGHTS}
+    total = sum(active.values())
+    if total <= 0:
+        raise ValueError("Primary ensemble weights do not match any active model names")
+    return {name: weight / total for name, weight in active.items()}
+
+
 def run_walkforward_model(
     long_df: pd.DataFrame,
     fit_days: int,
@@ -194,25 +209,47 @@ def run_walkforward_model(
             test_sub[f"pred_{model_name}"] = calibrated_probs
             model_preds.append(calibrated_probs)
 
-        weights = inverse_brier_weights(calibration_preds, y_calibration)
+        inverse_weights = inverse_brier_weights(calibration_preds, y_calibration)
+        primary_weights = primary_ensemble_weights(list(calibration_preds))
         ensemble_calibration_pred = sum(
-            calibration_preds[model_name] * weights[model_name]
-            for model_name in weights
+            calibration_preds[model_name] * primary_weights[model_name]
+            for model_name in primary_weights
         )
         ensemble_calibration_brier = brier_score_loss(y_calibration, ensemble_calibration_pred)
-        log(
-            "Window weights: "
-            + ", ".join(
-                f"{model_name}={weights[model_name]:.6f} (brier={calibration_briers[model_name]:.6f})"
-                for model_name in weights
-            )
-            + f"; ensemble_brier={ensemble_calibration_brier:.6f}"
+        brier_ensemble_calibration_pred = sum(
+            calibration_preds[model_name] * inverse_weights[model_name]
+            for model_name in inverse_weights
         )
-        ensemble_pred = sum(test_sub[f"pred_{model_name}"] * weights[model_name] for model_name in weights)
+        brier_ensemble_calibration_brier = brier_score_loss(y_calibration, brier_ensemble_calibration_pred)
+        log(
+            "Primary ensemble weights: "
+            + ", ".join(
+                f"{model_name}={primary_weights[model_name]:.6f}"
+                for model_name in primary_weights
+            )
+            + f"; primary_ensemble_brier={ensemble_calibration_brier:.6f}"
+        )
+        log(
+            "Inverse-Brier diagnostic weights: "
+            + ", ".join(
+                f"{model_name}={inverse_weights[model_name]:.6f} (brier={calibration_briers[model_name]:.6f})"
+                for model_name in inverse_weights
+            )
+            + f"; inverse_brier_ensemble_brier={brier_ensemble_calibration_brier:.6f}"
+        )
+        ensemble_pred = sum(
+            test_sub[f"pred_{model_name}"] * primary_weights[model_name]
+            for model_name in primary_weights
+        )
+        brier_ensemble_pred = sum(
+            test_sub[f"pred_{model_name}"] * inverse_weights[model_name]
+            for model_name in inverse_weights
+        )
         test_sub["pred_ensemble"] = ensemble_pred
+        test_sub["pred_ensemble_brier"] = brier_ensemble_pred
         test_sub["window_id"] = window_idx
 
-        for model_name in weights:
+        for model_name in calibration_preds:
             window_diagnostics.append(
                 {
                     "window_id": window_idx,
@@ -220,7 +257,8 @@ def run_walkforward_model(
                     "fit_dates": len(fit_dates),
                     "calibration_dates": len(calibration_dates),
                     "test_dates": len(test_dates),
-                    "weight": float(weights[model_name]),
+                    "primary_weight": float(primary_weights.get(model_name, 0.0)),
+                    "inverse_brier_weight": float(inverse_weights[model_name]),
                     "calibration_brier": float(calibration_briers[model_name]),
                 }
             )
@@ -231,8 +269,21 @@ def run_walkforward_model(
                 "fit_dates": len(fit_dates),
                 "calibration_dates": len(calibration_dates),
                 "test_dates": len(test_dates),
-                "weight": 1.0,
+                "primary_weight": 1.0,
+                "inverse_brier_weight": np.nan,
                 "calibration_brier": float(ensemble_calibration_brier),
+            }
+        )
+        window_diagnostics.append(
+            {
+                "window_id": window_idx,
+                "model": "pred_ensemble_brier",
+                "fit_dates": len(fit_dates),
+                "calibration_dates": len(calibration_dates),
+                "test_dates": len(test_dates),
+                "primary_weight": np.nan,
+                "inverse_brier_weight": 1.0,
+                "calibration_brier": float(brier_ensemble_calibration_brier),
             }
         )
         all_test_chunks.append(
@@ -252,6 +303,7 @@ def run_walkforward_model(
                     "pred_rf",
                     "pred_logreg",
                     "pred_ensemble",
+                    "pred_ensemble_brier",
                 ]
             ]
         )

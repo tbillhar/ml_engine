@@ -24,6 +24,87 @@ from src.walkforward_model import run_walkforward_model
 
 LogFn = Callable[[str], None] | None
 ProgressFn = Callable[[int], None] | None
+DEFAULT_THRESHOLD_SWEEP = [0.50, 0.52, 0.55, 0.58, 0.60]
+
+
+def build_probability_bucket_diagnostics(
+    pred_df: pd.DataFrame,
+    model_cols: list[str],
+) -> pd.DataFrame:
+    """Summarize calibration and realized outcomes by model probability bucket."""
+    rows: list[dict[str, float | int | str]] = []
+    for model_col in model_cols:
+        bucket_df = pred_df[[model_col, "profit_target", "next_ret"]].copy()
+        if bucket_df[model_col].nunique() < 2:
+            rows.append(
+                {
+                    "model": model_col,
+                    "bucket": "all",
+                    "count": int(len(bucket_df)),
+                    "mean_probability": float(bucket_df[model_col].mean()),
+                    "realized_win_rate": float(bucket_df["profit_target"].mean()),
+                    "mean_next_ret": float(bucket_df["next_ret"].mean()),
+                }
+            )
+            continue
+
+        bucket_df["bucket_id"] = pd.qcut(
+            bucket_df[model_col].rank(method="first"),
+            q=min(10, len(bucket_df)),
+            labels=False,
+            duplicates="drop",
+        )
+        grouped = (
+            bucket_df.groupby("bucket_id", dropna=False)
+            .agg(
+                count=(model_col, "size"),
+                mean_probability=(model_col, "mean"),
+                realized_win_rate=("profit_target", "mean"),
+                mean_next_ret=("next_ret", "mean"),
+            )
+            .reset_index()
+            .sort_values("bucket_id")
+        )
+        for _, row in grouped.iterrows():
+            rows.append(
+                {
+                    "model": model_col,
+                    "bucket": f"q{int(row['bucket_id']) + 1}",
+                    "count": int(row["count"]),
+                    "mean_probability": float(row["mean_probability"]),
+                    "realized_win_rate": float(row["realized_win_rate"]),
+                    "mean_next_ret": float(row["mean_next_ret"]),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def build_threshold_sweep(
+    pred_df: pd.DataFrame,
+    model_cols: list[str],
+    thresholds: list[float],
+    transaction_loss_pct: float,
+    trading_days_per_year: int,
+) -> pd.DataFrame:
+    """Evaluate thresholded trading behavior across a small grid of thresholds."""
+    rows: list[dict[str, float | str]] = []
+    for model_col in model_cols:
+        for threshold in thresholds:
+            pnl_df = compute_threshold_pnl(
+                pred_df,
+                pred_col=model_col,
+                p_win_threshold=threshold,
+                transaction_loss_pct=transaction_loss_pct,
+            )
+            stats = perf_stats(pnl_df, trading_days_per_year=trading_days_per_year)
+            rows.append(
+                {
+                    "model": model_col,
+                    "threshold": threshold,
+                    **stats,
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def run_pipeline(
@@ -138,6 +219,7 @@ def run_pipeline(
         "pred_rf",
         "pred_logreg",
         "pred_ensemble",
+        "pred_ensemble_brier",
     ]
     correlation_df = pred_df[model_cols].corr()
     spearman_correlation_df = pred_df[model_cols].corr(method="spearman")
@@ -168,26 +250,72 @@ def run_pipeline(
             }
         )
     model_diagnostics_df = pd.DataFrame(diagnostic_rows).sort_values("brier_score")
-    best_single = model_diagnostics_df[model_diagnostics_df["model"] != "pred_ensemble"].iloc[0]
+    single_model_df = model_diagnostics_df[
+        ~model_diagnostics_df["model"].isin(["pred_ensemble", "pred_ensemble_brier"])
+    ].copy()
+    best_single_brier = single_model_df.sort_values("brier_score").iloc[0]
+    best_single_return = single_model_df.sort_values("Annualized Return", ascending=False).iloc[0]
+    best_single_sharpe = single_model_df.sort_values("Sharpe", ascending=False).iloc[0]
     ensemble_row = model_diagnostics_df[model_diagnostics_df["model"] == "pred_ensemble"].iloc[0]
+    ensemble_brier_row = model_diagnostics_df[model_diagnostics_df["model"] == "pred_ensemble_brier"].iloc[0]
     ensemble_benefit_df = pd.DataFrame(
         [
             {
-                "metric": "Brier Score Improvement vs Best Single",
-                "value": float(best_single["brier_score"] - ensemble_row["brier_score"]),
+                "metric": "Primary Ensemble Brier Improvement vs Best Single Brier",
+                "value": float(best_single_brier["brier_score"] - ensemble_row["brier_score"]),
             },
             {
-                "metric": "Annualized Return Improvement vs Best Single",
-                "value": float(ensemble_row["Annualized Return"] - best_single["Annualized Return"]),
+                "metric": "Primary Ensemble Annualized Return Improvement vs Best Single Return",
+                "value": float(ensemble_row["Annualized Return"] - best_single_return["Annualized Return"]),
             },
             {
-                "metric": "Sharpe Improvement vs Best Single",
-                "value": float(ensemble_row["Sharpe"] - best_single["Sharpe"]),
+                "metric": "Primary Ensemble Sharpe Improvement vs Best Single Sharpe",
+                "value": float(ensemble_row["Sharpe"] - best_single_sharpe["Sharpe"]),
             },
+            {
+                "metric": "Inverse-Brier Ensemble Brier Improvement vs Best Single Brier",
+                "value": float(best_single_brier["brier_score"] - ensemble_brier_row["brier_score"]),
+            },
+            {
+                "metric": "Inverse-Brier Ensemble Annualized Return Improvement vs Best Single Return",
+                "value": float(
+                    ensemble_brier_row["Annualized Return"] - best_single_return["Annualized Return"]
+                ),
+            },
+            {
+                "metric": "Inverse-Brier Ensemble Sharpe Improvement vs Best Single Sharpe",
+                "value": float(ensemble_brier_row["Sharpe"] - best_single_sharpe["Sharpe"]),
+            },
+        ]
+    )
+    bucket_diagnostics_df = build_probability_bucket_diagnostics(pred_df, model_cols)
+    threshold_sweep_models = ["pred_ensemble", "pred_ensemble_brier", "pred_lgbm_deep", "pred_logreg", "pred_rf"]
+    threshold_values = sorted({p_win_threshold, *DEFAULT_THRESHOLD_SWEEP})
+    threshold_sweep_df = build_threshold_sweep(
+        pred_df,
+        model_cols=threshold_sweep_models,
+        thresholds=threshold_values,
+        transaction_loss_pct=transaction_loss_pct,
+        trading_days_per_year=trading_days_per_year,
+    )
+    run_parameters_df = pd.DataFrame(
+        [
+            {
+                "csv_path": csv_path,
+                "fit_days": fit_days,
+                "calibration_days": calibration_days,
+                "test_days": test_days,
+                "step_days": step_days,
+                "horizon": horizon,
+                "transaction_loss_pct": transaction_loss_pct,
+                "trading_days_per_year": trading_days_per_year,
+                "p_win_threshold": p_win_threshold,
+            }
         ]
     )
 
     log("Saving CSV outputs")
+    run_parameters_df.to_csv(output_dir / "run_parameters.csv", index=False)
     pred_df.to_csv(output_dir / "predictions.csv", index=False)
     window_diag_df.to_csv(output_dir / "window_model_diagnostics.csv", index=False)
     pnl_threshold.to_csv(output_dir / "pnl_threshold.csv", index=False)
@@ -200,6 +328,8 @@ def run_pipeline(
     threshold_agreement_df.to_csv(output_dir / "model_threshold_agreement.csv")
     model_diagnostics_df.to_csv(output_dir / "model_diagnostics.csv", index=False)
     ensemble_benefit_df.to_csv(output_dir / "ensemble_benefit.csv", index=False)
+    bucket_diagnostics_df.to_csv(output_dir / "probability_bucket_diagnostics.csv", index=False)
+    threshold_sweep_df.to_csv(output_dir / "threshold_sweep.csv", index=False)
 
     stats_df = pd.DataFrame(
         [
@@ -212,9 +342,12 @@ def run_pipeline(
     )
     stats_df.to_csv(output_dir / "performance_summary.csv", index=False)
     log(
-        "Best single-model Brier: "
-        f"{best_single['model']}={best_single['brier_score']:.4f}; "
-        f"ensemble={ensemble_row['brier_score']:.4f}"
+        "Best single-model diagnostics: "
+        f"brier={best_single_brier['model']}:{best_single_brier['brier_score']:.4f}, "
+        f"return={best_single_return['model']}:{best_single_return['Annualized Return']:.4%}, "
+        f"sharpe={best_single_sharpe['model']}:{best_single_sharpe['Sharpe']:.4f}; "
+        f"primary_ensemble_brier={ensemble_row['brier_score']:.4f}, "
+        f"inverse_brier_ensemble_brier={ensemble_brier_row['brier_score']:.4f}"
     )
     log(
         "Average pairwise prediction correlation: "
