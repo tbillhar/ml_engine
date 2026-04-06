@@ -79,6 +79,7 @@ def run_pipeline(
         test_days=test_days,
         step_days=step_days,
         transaction_loss_pct=transaction_loss_pct,
+        log_fn=log,
     )
 
     log("Computing daily mark-to-market probability-threshold PnL series")

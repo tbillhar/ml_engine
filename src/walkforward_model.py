@@ -7,6 +7,7 @@ import pandas as pd
 from lightgbm import LGBMClassifier
 from sklearn.base import clone
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import brier_score_loss
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
@@ -106,14 +107,33 @@ def predict_positive_scores(model, X: pd.DataFrame) -> np.ndarray:
     return model.predict(X)
 
 
+def inverse_brier_weights(
+    calibrated_predictions: dict[str, np.ndarray],
+    y_true: np.ndarray,
+) -> dict[str, float]:
+    """Return normalized inverse-Brier weights for calibrated model predictions."""
+    epsilon = 1e-6
+    inv_scores = {}
+    for model_name, preds in calibrated_predictions.items():
+        brier = brier_score_loss(y_true, preds)
+        inv_scores[model_name] = 1.0 / max(brier, epsilon)
+    total = sum(inv_scores.values())
+    return {model_name: score / total for model_name, score in inv_scores.items()}
+
+
 def run_walkforward_model(
     long_df: pd.DataFrame,
     train_days: int,
     test_days: int,
     step_days: int,
     transaction_loss_pct: float,
+    log_fn=None,
 ) -> pd.DataFrame:
     """Run walk-forward calibrated classifier ensemble and return predictions."""
+    def log(message: str) -> None:
+        if log_fn:
+            log_fn(message)
+
     feature_cols = [
         c for c in long_df.columns
         if c not in ["Date", "pair", "next_ret", "future_ret", "rel", "profit_target", "ev_target"]
@@ -122,8 +142,9 @@ def run_walkforward_model(
     all_dates = sorted(long_df["Date"].unique())
 
     all_test_chunks = []
+    window_splits = list(sliding_windows(all_dates, train_days, test_days, step_days))
 
-    for train_dates, test_dates in sliding_windows(all_dates, train_days, test_days, step_days):
+    for window_idx, (train_dates, test_dates) in enumerate(window_splits, start=1):
         subtrain_dates, calibration_dates = split_train_and_calibration_dates(train_dates)
         train_sub, X_train, y_train, g_train = make_xy(long_df, subtrain_dates, feature_cols)
         calibration_sub, X_calibration, y_calibration, g_calibration = make_xy(
@@ -133,20 +154,32 @@ def run_walkforward_model(
         )
         test_sub, X_test, y_test, g_test = make_xy(long_df, test_dates, feature_cols)
         _ = (train_sub, g_train, calibration_sub, g_calibration, y_test, g_test, transaction_loss_pct)
+        log(
+            f"Training ensemble window {window_idx}/{len(window_splits)} "
+            f"(train dates: {len(train_dates)}, calibration dates: {len(calibration_dates)}, test dates: {len(test_dates)})"
+        )
 
         test_sub = test_sub.copy()
         model_preds: list[np.ndarray] = []
+        calibration_preds: dict[str, np.ndarray] = {}
         for model_name, base_model in build_models().items():
             model = clone(base_model)
             model.fit(X_train, y_train)
             calibration_scores = predict_positive_scores(model, X_calibration)
             calibrator = fit_platt_calibrator(calibration_scores, y_calibration)
+            calibration_probs = apply_calibrator(calibrator, calibration_scores)
+            calibration_preds[model_name] = calibration_probs
             test_scores = predict_positive_scores(model, X_test)
             calibrated_probs = apply_calibrator(calibrator, test_scores)
             test_sub[f"pred_{model_name}"] = calibrated_probs
             model_preds.append(calibrated_probs)
 
-        ensemble_pred = np.mean(np.column_stack(model_preds), axis=1)
+        weights = inverse_brier_weights(calibration_preds, y_calibration)
+        log(
+            "Window weights: "
+            + ", ".join(f"{model_name}={weight:.3f}" for model_name, weight in weights.items())
+        )
+        ensemble_pred = sum(test_sub[f"pred_{model_name}"] * weights[model_name] for model_name in weights)
         test_sub["pred_ensemble"] = ensemble_pred
         all_test_chunks.append(
             test_sub[
