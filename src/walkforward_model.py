@@ -44,6 +44,7 @@ def make_xy(subdf: pd.DataFrame, date_list, feature_cols: list[str]):
 
 def feature_subset_columns(feature_cols: list[str]) -> dict[str, list[str]]:
     """Group raw features into reusable specialist subsets."""
+    returns_only_prefixes = ("ret_", "rs1_")
     returns_momentum_prefixes = (
         "ret_",
         "mom5_",
@@ -86,6 +87,8 @@ def feature_subset_columns(feature_cols: list[str]) -> dict[str, list[str]]:
         "vol30_",
         "rank_vol30_",
         "dvol30_",
+        "norm_mom5_",
+        "norm_mom10_",
     )
 
     def matching(prefixes: tuple[str, ...]) -> list[str]:
@@ -93,6 +96,7 @@ def feature_subset_columns(feature_cols: list[str]) -> dict[str, list[str]]:
 
     return {
         "full": feature_cols,
+        "returns_only": matching(returns_only_prefixes),
         "returns_momentum": matching(returns_momentum_prefixes),
         "corr_regime": matching(corr_regime_prefixes),
         "volatility": matching(volatility_prefixes),
@@ -138,6 +142,18 @@ def build_models() -> dict[str, object]:
             random_state=45,
             verbosity=-1,
         ),
+        "lgbm_deep_volatility": LGBMClassifier(
+            objective="binary",
+            boosting_type="gbdt",
+            num_leaves=31,
+            learning_rate=0.05,
+            n_estimators=250,
+            min_child_samples=20,
+            subsample=0.85,
+            colsample_bytree=0.85,
+            random_state=46,
+            verbosity=-1,
+        ),
         "rf": make_pipeline(
             SimpleImputer(strategy="median"),
             RandomForestClassifier(
@@ -145,6 +161,26 @@ def build_models() -> dict[str, object]:
                 max_depth=None,
                 min_samples_leaf=2,
                 random_state=42,
+                n_jobs=-1,
+            ),
+        ),
+        "rf_returns_momentum": make_pipeline(
+            SimpleImputer(strategy="median"),
+            RandomForestClassifier(
+                n_estimators=250,
+                max_depth=None,
+                min_samples_leaf=2,
+                random_state=43,
+                n_jobs=-1,
+            ),
+        ),
+        "rf_corr_regime": make_pipeline(
+            SimpleImputer(strategy="median"),
+            RandomForestClassifier(
+                n_estimators=250,
+                max_depth=None,
+                min_samples_leaf=2,
+                random_state=44,
                 n_jobs=-1,
             ),
         ),
@@ -173,6 +209,15 @@ def build_models() -> dict[str, object]:
                 C=0.75,
                 max_iter=1000,
                 random_state=44,
+            ),
+        ),
+        "logreg_volatility": make_pipeline(
+            SimpleImputer(strategy="median"),
+            StandardScaler(),
+            LogisticRegression(
+                C=0.75,
+                max_iter=1000,
+                random_state=45,
             ),
         ),
     }
@@ -235,7 +280,9 @@ def model_feature_subset_map(model_names: list[str]) -> dict[str, str]:
     """Map each model to the feature subset it should consume."""
     mapping = {name: "full" for name in model_names}
     for name in model_names:
-        if "returns_momentum" in name:
+        if "returns_only" in name:
+            mapping[name] = "returns_only"
+        elif "returns_momentum" in name:
             mapping[name] = "returns_momentum"
         elif "corr_regime" in name:
             mapping[name] = "corr_regime"
@@ -268,6 +315,8 @@ def run_walkforward_model(
     all_test_chunks = []
     window_diagnostics = []
     window_splits = list(sliding_windows(all_dates, fit_days, calibration_days, test_days, step_days))
+    prediction_cols = [f"pred_{name}" for name in models]
+    prediction_cols.extend(["pred_ensemble", "pred_ensemble_brier"])
 
     for window_idx, (fit_dates, calibration_dates, test_dates) in enumerate(window_splits, start=1):
         train_sub, X_train, y_train, g_train = make_xy(long_df, fit_dates, feature_cols)
@@ -387,25 +436,7 @@ def run_walkforward_model(
         )
         all_test_chunks.append(
             test_sub[
-                [
-                    "window_id",
-                    "Date",
-                    "pair",
-                    "next_ret",
-                    "future_ret",
-                    "profit_target",
-                    "ev_target",
-                    "rel",
-                    "pred_lgbm_deep",
-                    "pred_lgbm_deep_returns_momentum",
-                    "pred_lgbm_deep_corr_regime",
-                    "pred_rf",
-                    "pred_logreg",
-                    "pred_logreg_returns_momentum",
-                    "pred_logreg_corr_regime",
-                    "pred_ensemble",
-                    "pred_ensemble_brier",
-                ]
+                ["window_id", *META_COLUMNS, *prediction_cols]
             ]
         )
 

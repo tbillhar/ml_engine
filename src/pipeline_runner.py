@@ -114,6 +114,98 @@ def build_threshold_sweep(
     return pd.DataFrame(rows)
 
 
+def selected_trade_rows(
+    pred_df: pd.DataFrame,
+    pred_col: str,
+    selection: str,
+    p_win_threshold: float,
+) -> pd.DataFrame:
+    """Return the rows actually selected by a daily relative-selection rule."""
+    selected_rows = []
+    for _, grp in pred_df.groupby("Date", sort=True):
+        ordered = grp.sort_values(pred_col, ascending=False)
+        if selection == "threshold_top1":
+            eligible = ordered[ordered[pred_col] > p_win_threshold].head(1)
+        elif selection == "top1":
+            eligible = ordered.head(1)
+        elif selection == "top3":
+            eligible = ordered.head(3)
+        elif selection == "top_decile":
+            eligible = ordered.head(max(1, int(np.ceil(len(ordered) * 0.10))))
+        else:
+            raise ValueError(f"Unknown selection '{selection}'")
+        if not eligible.empty:
+            selected_rows.append(eligible)
+    if not selected_rows:
+        return pred_df.iloc[0:0].copy()
+    return pd.concat(selected_rows, ignore_index=True)
+
+
+def build_top_selection_diagnostics(
+    pred_df: pd.DataFrame,
+    model_cols: list[str],
+    p_win_threshold: float,
+    transaction_loss_pct: float,
+    trading_days_per_year: int,
+) -> pd.DataFrame:
+    """Compare models as Top-1/Top-3 selectors on the evaluation slice."""
+    rows: list[dict[str, float | str]] = []
+    selection_map = {
+        "threshold_top1": lambda col: compute_threshold_pnl(
+            pred_df,
+            pred_col=col,
+            p_win_threshold=p_win_threshold,
+            transaction_loss_pct=transaction_loss_pct,
+            max_positions=1,
+        ),
+        "top1": lambda col: compute_top_k_pnl(
+            pred_df,
+            pred_col=col,
+            transaction_loss_pct=transaction_loss_pct,
+            k=1,
+        ),
+        "top3": lambda col: compute_top_k_pnl(
+            pred_df,
+            pred_col=col,
+            transaction_loss_pct=transaction_loss_pct,
+            k=3,
+        ),
+        "top_decile": lambda col: compute_top_quantile_pnl(
+            pred_df,
+            pred_col=col,
+            transaction_loss_pct=transaction_loss_pct,
+            top_quantile=0.10,
+        ),
+    }
+    for model_col in model_cols:
+        for selection_name, pnl_builder in selection_map.items():
+            pnl_df = pnl_builder(model_col)
+            stats = perf_stats(pnl_df, trading_days_per_year=trading_days_per_year)
+            selected_df = selected_trade_rows(
+                pred_df,
+                pred_col=model_col,
+                selection=selection_name,
+                p_win_threshold=p_win_threshold,
+            )
+            realized_win_rate = (
+                float(selected_df["profit_target"].mean()) if not selected_df.empty else np.nan
+            )
+            avg_selected_next_ret = (
+                float(selected_df["next_ret"].mean()) if not selected_df.empty else np.nan
+            )
+            rows.append(
+                {
+                    "model": model_col,
+                    "selection": selection_name,
+                    "selected_rows": int(len(selected_df)),
+                    "realized_win_rate": realized_win_rate,
+                    "avg_selected_next_ret": avg_selected_next_ret,
+                    **stats,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def resolve_live_prediction_column(live_model: str) -> str:
     """Map a user-facing live model name to the prediction column."""
     if live_model not in LIVE_MODEL_COLUMNS:
@@ -319,18 +411,8 @@ def run_pipeline(
     }
 
     log("Computing model correlation and ensemble benefit diagnostics")
-    model_cols = [
-        "pred_lgbm_deep",
-        "pred_lgbm_deep_returns_momentum",
-        "pred_lgbm_deep_corr_regime",
-        "pred_rf",
-        "pred_logreg",
-        "pred_logreg_returns_momentum",
-        "pred_logreg_corr_regime",
-        "pred_ensemble",
-        "pred_ensemble_brier",
-    ]
     eval_pred_df = holdout_pred_df
+    model_cols = [col for col in eval_pred_df.columns if col.startswith("pred_")]
     correlation_df = eval_pred_df[model_cols].corr()
     spearman_correlation_df = eval_pred_df[model_cols].corr(method="spearman")
     threshold_decisions = eval_pred_df[model_cols].gt(p_win_threshold).astype(int)
@@ -399,12 +481,19 @@ def run_pipeline(
         ]
     )
     bucket_diagnostics_df = build_probability_bucket_diagnostics(eval_pred_df, model_cols)
-    threshold_sweep_models = ["pred_ensemble", "pred_lgbm_deep", "pred_logreg", "pred_rf"]
+    threshold_sweep_models = ["pred_ensemble", "pred_lgbm_deep", "pred_logreg", "pred_rf", "pred_lgbm_deep_returns_momentum"]
     threshold_values = sorted({p_win_threshold, *DEFAULT_THRESHOLD_SWEEP})
     threshold_sweep_df = build_threshold_sweep(
         eval_pred_df,
         model_cols=threshold_sweep_models,
         thresholds=threshold_values,
+        transaction_loss_pct=transaction_loss_pct,
+        trading_days_per_year=trading_days_per_year,
+    )
+    top_selection_df = build_top_selection_diagnostics(
+        eval_pred_df,
+        model_cols=model_cols,
+        p_win_threshold=p_win_threshold,
         transaction_loss_pct=transaction_loss_pct,
         trading_days_per_year=trading_days_per_year,
     )
@@ -442,6 +531,7 @@ def run_pipeline(
     ensemble_benefit_df.to_csv(output_dir / "ensemble_benefit.csv", index=False)
     bucket_diagnostics_df.to_csv(output_dir / "probability_bucket_diagnostics.csv", index=False)
     threshold_sweep_df.to_csv(output_dir / "threshold_sweep.csv", index=False)
+    top_selection_df.to_csv(output_dir / "top_selection_diagnostics.csv", index=False)
 
     holdout_stats_df.to_csv(output_dir / "performance_summary.csv", index=False)
     research_stats_df.to_csv(output_dir / "performance_summary_research.csv", index=False)
