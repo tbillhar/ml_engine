@@ -16,6 +16,8 @@ from src.feature_engineering import compute_future_returns
 from src.long_format import build_long
 from src.pnl_analysis import (
     compute_equal_weight_pnl,
+    compute_top_k_pnl,
+    compute_top_quantile_pnl,
     compute_threshold_pnl,
     cumulative_annualized_curve,
     perf_stats,
@@ -25,6 +27,11 @@ from src.walkforward_model import run_walkforward_model
 LogFn = Callable[[str], None] | None
 ProgressFn = Callable[[int], None] | None
 DEFAULT_THRESHOLD_SWEEP = [0.50, 0.52, 0.55, 0.58, 0.60]
+LIVE_MODEL_COLUMNS = {
+    "ensemble": "pred_ensemble",
+    "lgbm_deep": "pred_lgbm_deep",
+    "logreg": "pred_logreg",
+}
 
 
 def build_probability_bucket_diagnostics(
@@ -107,6 +114,108 @@ def build_threshold_sweep(
     return pd.DataFrame(rows)
 
 
+def resolve_live_prediction_column(live_model: str) -> str:
+    """Map a user-facing live model name to the prediction column."""
+    if live_model not in LIVE_MODEL_COLUMNS:
+        raise ValueError(f"Unsupported LIVE_MODEL '{live_model}'. Expected one of: {sorted(LIVE_MODEL_COLUMNS)}")
+    return LIVE_MODEL_COLUMNS[live_model]
+
+
+def split_holdout_period(pred_df: pd.DataFrame, holdout_days: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split predictions into research and final holdout periods using unique dates."""
+    if holdout_days <= 0:
+        return pred_df.copy(), pred_df.copy()
+    unique_dates = sorted(pred_df["Date"].unique())
+    if holdout_days >= len(unique_dates):
+        raise ValueError("HOLDOUT_DAYS must be smaller than the number of out-of-sample test dates")
+    holdout_dates = set(unique_dates[-holdout_days:])
+    research_df = pred_df[~pred_df["Date"].isin(holdout_dates)].copy()
+    holdout_df = pred_df[pred_df["Date"].isin(holdout_dates)].copy()
+    if research_df.empty or holdout_df.empty:
+        raise ValueError("Holdout split produced an empty research or holdout dataset")
+    return research_df, holdout_df
+
+
+def strategy_frame(
+    pred_df: pd.DataFrame,
+    pred_col: str,
+    p_win_threshold: float,
+    transaction_loss_pct: float,
+    trading_days_per_year: int,
+    live_model_label: str,
+) -> tuple[list[tuple[str, pd.DataFrame]], pd.DataFrame]:
+    """Build strategy PnL frames and summary stats for a chosen live prediction column."""
+    strategy_series = [
+        (
+            f"{live_model_label} Threshold",
+            compute_threshold_pnl(
+                pred_df,
+                pred_col=pred_col,
+                p_win_threshold=p_win_threshold,
+                transaction_loss_pct=transaction_loss_pct,
+            ),
+        ),
+        (
+            f"{live_model_label} Threshold Top-1",
+            compute_threshold_pnl(
+                pred_df,
+                pred_col=pred_col,
+                p_win_threshold=p_win_threshold,
+                transaction_loss_pct=transaction_loss_pct,
+                max_positions=1,
+            ),
+        ),
+        (
+            f"{live_model_label} Threshold Top-3",
+            compute_threshold_pnl(
+                pred_df,
+                pred_col=pred_col,
+                p_win_threshold=p_win_threshold,
+                transaction_loss_pct=transaction_loss_pct,
+                max_positions=3,
+            ),
+        ),
+        (
+            f"{live_model_label} Top-1",
+            compute_top_k_pnl(
+                pred_df,
+                pred_col=pred_col,
+                transaction_loss_pct=transaction_loss_pct,
+                k=1,
+            ),
+        ),
+        (
+            f"{live_model_label} Top-3",
+            compute_top_k_pnl(
+                pred_df,
+                pred_col=pred_col,
+                transaction_loss_pct=transaction_loss_pct,
+                k=3,
+            ),
+        ),
+        (
+            f"{live_model_label} Top-Decile",
+            compute_top_quantile_pnl(
+                pred_df,
+                pred_col=pred_col,
+                transaction_loss_pct=transaction_loss_pct,
+                top_quantile=0.10,
+            ),
+        ),
+        (
+            "Equal-weight",
+            compute_equal_weight_pnl(pred_df, transaction_loss_pct=transaction_loss_pct),
+        ),
+    ]
+    stats_df = pd.DataFrame(
+        [
+            {"strategy": name, **perf_stats(series_df, trading_days_per_year=trading_days_per_year)}
+            for name, series_df in strategy_series
+        ]
+    )
+    return strategy_series, stats_df
+
+
 def run_pipeline(
     csv_path: str,
     fit_days: int,
@@ -117,6 +226,8 @@ def run_pipeline(
     transaction_loss_pct: float,
     trading_days_per_year: int,
     p_win_threshold: float,
+    holdout_days: int,
+    live_model: str,
     output_dir: Path,
     log_fn: LogFn = None,
     progress_fn: ProgressFn = None,
@@ -155,7 +266,8 @@ def run_pipeline(
     log(
         "Running walk-forward ensemble "
         f"(fit={fit_days}, calibration={calibration_days}, test={test_days}, "
-        f"step={step_days}, p_win_threshold={p_win_threshold})"
+        f"step={step_days}, p_win_threshold={p_win_threshold}, "
+        f"holdout_days={holdout_days}, live_model={live_model})"
     )
     set_progress(60)
     pred_df, window_diag_df = run_walkforward_model(
@@ -168,69 +280,67 @@ def run_pipeline(
         log_fn=log,
     )
 
-    log("Computing daily mark-to-market probability-threshold PnL series")
+    live_pred_col = resolve_live_prediction_column(live_model)
+    research_pred_df, holdout_pred_df = split_holdout_period(pred_df, holdout_days=holdout_days)
+    log(
+        f"Using final {holdout_days} out-of-sample dates as holdout "
+        f"({holdout_pred_df['Date'].min()} to {holdout_pred_df['Date'].max()})"
+    )
+
+    log("Computing daily mark-to-market strategy series")
     set_progress(75)
-    pnl_threshold = compute_threshold_pnl(
-        pred_df,
-        pred_col="pred_ensemble",
+    holdout_strategy_series, holdout_stats_df = strategy_frame(
+        holdout_pred_df,
+        pred_col=live_pred_col,
         p_win_threshold=p_win_threshold,
         transaction_loss_pct=transaction_loss_pct,
+        trading_days_per_year=trading_days_per_year,
+        live_model_label=live_model,
     )
-    pnl_top1 = compute_threshold_pnl(
-        pred_df,
-        pred_col="pred_ensemble",
+    research_strategy_series, research_stats_df = strategy_frame(
+        research_pred_df,
+        pred_col=live_pred_col,
         p_win_threshold=p_win_threshold,
         transaction_loss_pct=transaction_loss_pct,
-        max_positions=1,
+        trading_days_per_year=trading_days_per_year,
+        live_model_label=live_model,
     )
-    pnl_top3 = compute_threshold_pnl(
+    full_strategy_series, full_stats_df = strategy_frame(
         pred_df,
-        pred_col="pred_ensemble",
+        pred_col=live_pred_col,
         p_win_threshold=p_win_threshold,
         transaction_loss_pct=transaction_loss_pct,
-        max_positions=3,
+        trading_days_per_year=trading_days_per_year,
+        live_model_label=live_model,
     )
-    pnl_top5 = compute_threshold_pnl(
-        pred_df,
-        pred_col="pred_ensemble",
-        p_win_threshold=p_win_threshold,
-        transaction_loss_pct=transaction_loss_pct,
-        max_positions=5,
-    )
-    pnl_eq = compute_equal_weight_pnl(pred_df, transaction_loss_pct=transaction_loss_pct)
-
-    cum_threshold = cumulative_annualized_curve(pnl_threshold, trading_days_per_year=trading_days_per_year)
-    cum1 = cumulative_annualized_curve(pnl_top1, trading_days_per_year=trading_days_per_year)
-    cum3 = cumulative_annualized_curve(pnl_top3, trading_days_per_year=trading_days_per_year)
-    cum5 = cumulative_annualized_curve(pnl_top5, trading_days_per_year=trading_days_per_year)
-    cum_eq = cumulative_annualized_curve(pnl_eq, trading_days_per_year=trading_days_per_year)
-
-    threshold_stats = perf_stats(pnl_threshold, trading_days_per_year=trading_days_per_year)
-    top1_stats = perf_stats(pnl_top1, trading_days_per_year=trading_days_per_year)
-    top3_stats = perf_stats(pnl_top3, trading_days_per_year=trading_days_per_year)
-    top5_stats = perf_stats(pnl_top5, trading_days_per_year=trading_days_per_year)
-    eq_stats = perf_stats(pnl_eq, trading_days_per_year=trading_days_per_year)
+    holdout_curves = {
+        name: cumulative_annualized_curve(series_df, trading_days_per_year=trading_days_per_year)
+        for name, series_df in holdout_strategy_series
+    }
 
     log("Computing model correlation and ensemble benefit diagnostics")
     model_cols = [
-        "pred_lgbm_shallow",
-        "pred_lgbm_base",
         "pred_lgbm_deep",
+        "pred_lgbm_deep_returns_momentum",
+        "pred_lgbm_deep_corr_regime",
         "pred_rf",
         "pred_logreg",
+        "pred_logreg_returns_momentum",
+        "pred_logreg_corr_regime",
         "pred_ensemble",
         "pred_ensemble_brier",
     ]
-    correlation_df = pred_df[model_cols].corr()
-    spearman_correlation_df = pred_df[model_cols].corr(method="spearman")
-    threshold_decisions = pred_df[model_cols].gt(p_win_threshold).astype(int)
+    eval_pred_df = holdout_pred_df
+    correlation_df = eval_pred_df[model_cols].corr()
+    spearman_correlation_df = eval_pred_df[model_cols].corr(method="spearman")
+    threshold_decisions = eval_pred_df[model_cols].gt(p_win_threshold).astype(int)
     threshold_agreement_df = threshold_decisions.corr()
 
     diagnostic_rows = []
     for model_col in model_cols:
         stats = perf_stats(
             compute_threshold_pnl(
-                pred_df,
+                eval_pred_df,
                 pred_col=model_col,
                 p_win_threshold=p_win_threshold,
                 transaction_loss_pct=transaction_loss_pct,
@@ -240,10 +350,10 @@ def run_pipeline(
         diagnostic_rows.append(
             {
                 "model": model_col,
-                "brier_score": brier_score_loss(pred_df["profit_target"], pred_df[model_col]),
-                "mean_probability": float(pred_df[model_col].mean()),
-                "std_probability": float(pred_df[model_col].std()),
-                "trade_fraction_above_threshold": float((pred_df[model_col] > p_win_threshold).mean()),
+                "brier_score": brier_score_loss(eval_pred_df["profit_target"], eval_pred_df[model_col]),
+                "mean_probability": float(eval_pred_df[model_col].mean()),
+                "std_probability": float(eval_pred_df[model_col].std()),
+                "trade_fraction_above_threshold": float((eval_pred_df[model_col] > p_win_threshold).mean()),
                 "Annualized Return": stats["Annualized Return"],
                 "Sharpe": stats["Sharpe"],
                 "Trade Rate": stats["Trade Rate"],
@@ -288,11 +398,11 @@ def run_pipeline(
             },
         ]
     )
-    bucket_diagnostics_df = build_probability_bucket_diagnostics(pred_df, model_cols)
-    threshold_sweep_models = ["pred_ensemble", "pred_ensemble_brier", "pred_lgbm_deep", "pred_logreg", "pred_rf"]
+    bucket_diagnostics_df = build_probability_bucket_diagnostics(eval_pred_df, model_cols)
+    threshold_sweep_models = ["pred_ensemble", "pred_lgbm_deep", "pred_logreg", "pred_rf"]
     threshold_values = sorted({p_win_threshold, *DEFAULT_THRESHOLD_SWEEP})
     threshold_sweep_df = build_threshold_sweep(
-        pred_df,
+        eval_pred_df,
         model_cols=threshold_sweep_models,
         thresholds=threshold_values,
         transaction_loss_pct=transaction_loss_pct,
@@ -310,6 +420,11 @@ def run_pipeline(
                 "transaction_loss_pct": transaction_loss_pct,
                 "trading_days_per_year": trading_days_per_year,
                 "p_win_threshold": p_win_threshold,
+                "holdout_days": holdout_days,
+                "live_model": live_model,
+                "live_prediction_column": live_pred_col,
+                "research_test_dates": int(research_pred_df["Date"].nunique()),
+                "holdout_test_dates": int(holdout_pred_df["Date"].nunique()),
             }
         ]
     )
@@ -317,12 +432,9 @@ def run_pipeline(
     log("Saving CSV outputs")
     run_parameters_df.to_csv(output_dir / "run_parameters.csv", index=False)
     pred_df.to_csv(output_dir / "predictions.csv", index=False)
+    holdout_pred_df.to_csv(output_dir / "predictions_holdout.csv", index=False)
+    research_pred_df.to_csv(output_dir / "predictions_research.csv", index=False)
     window_diag_df.to_csv(output_dir / "window_model_diagnostics.csv", index=False)
-    pnl_threshold.to_csv(output_dir / "pnl_threshold.csv", index=False)
-    pnl_top1.to_csv(output_dir / "pnl_top1.csv", index=False)
-    pnl_top3.to_csv(output_dir / "pnl_top3.csv", index=False)
-    pnl_top5.to_csv(output_dir / "pnl_top5.csv", index=False)
-    pnl_eq.to_csv(output_dir / "pnl_equal_weight.csv", index=False)
     correlation_df.to_csv(output_dir / "model_prediction_correlation.csv")
     spearman_correlation_df.to_csv(output_dir / "model_prediction_rank_correlation.csv")
     threshold_agreement_df.to_csv(output_dir / "model_threshold_agreement.csv")
@@ -331,16 +443,12 @@ def run_pipeline(
     bucket_diagnostics_df.to_csv(output_dir / "probability_bucket_diagnostics.csv", index=False)
     threshold_sweep_df.to_csv(output_dir / "threshold_sweep.csv", index=False)
 
-    stats_df = pd.DataFrame(
-        [
-            {"strategy": "P(Win) Threshold", **threshold_stats},
-            {"strategy": "P(Win) Threshold Top-1", **top1_stats},
-            {"strategy": "P(Win) Threshold Top-3", **top3_stats},
-            {"strategy": "P(Win) Threshold Top-5", **top5_stats},
-            {"strategy": "Equal-weight", **eq_stats},
-        ]
-    )
-    stats_df.to_csv(output_dir / "performance_summary.csv", index=False)
+    holdout_stats_df.to_csv(output_dir / "performance_summary.csv", index=False)
+    research_stats_df.to_csv(output_dir / "performance_summary_research.csv", index=False)
+    full_stats_df.to_csv(output_dir / "performance_summary_full.csv", index=False)
+    for strategy_name, strategy_df in holdout_strategy_series:
+        safe_name = strategy_name.lower().replace(" ", "_").replace("(", "").replace(")", "").replace("-", "_")
+        strategy_df.to_csv(output_dir / f"{safe_name}.csv", index=False)
     log(
         "Best single-model diagnostics: "
         f"brier={best_single_brier['model']}:{best_single_brier['brier_score']:.4f}, "
@@ -358,18 +466,10 @@ def run_pipeline(
     set_progress(90)
     plot_path = output_dir / "pnl_curves.png"
     plt.figure(figsize=(12, 6))
-    plt.plot(cum_threshold["Date"], cum_threshold["cum_ann"], label="P(Win) Threshold", linewidth=2.6)
-    plt.plot(cum1["Date"], cum1["cum_ann"], label="P(Win) Top-1", linewidth=2.4)
-    plt.plot(cum3["Date"], cum3["cum_ann"], label="P(Win) Top-3", linewidth=2.2)
-    plt.plot(cum5["Date"], cum5["cum_ann"], label="P(Win) Top-5", linewidth=2.0)
-    plt.plot(
-        cum_eq["Date"],
-        cum_eq["cum_ann"],
-        label="Equal-Weight",
-        linestyle="--",
-        linewidth=1.8,
-    )
-    plt.title("Cumulative Annualized Return From Calibrated P(Win) Decisions")
+    for strategy_name in [f"{live_model} Threshold", f"{live_model} Threshold Top-1", f"{live_model} Top-1", f"{live_model} Top-3", f"{live_model} Top-Decile", "Equal-weight"]:
+        curve_df = holdout_curves[strategy_name]
+        plt.plot(curve_df["Date"], curve_df["cum_ann"], label=strategy_name, linewidth=2.0 if "Equal-weight" not in strategy_name else 1.8, linestyle="--" if strategy_name == "Equal-weight" else "-")
+    plt.title(f"Holdout Cumulative Annualized Return From {live_model} Decisions")
     plt.xlabel("Date")
     plt.ylabel("Cumulative Annualized Return %")
     plt.gca().yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
@@ -381,4 +481,4 @@ def run_pipeline(
 
     set_progress(100)
     log(f"Done. Outputs saved to: {output_dir.resolve()}")
-    return stats_df, plot_path
+    return holdout_stats_df, plot_path

@@ -60,6 +60,69 @@ def compute_threshold_pnl(
     return pd.DataFrame(rows).sort_values("Date")
 
 
+def compute_top_k_pnl(
+    df: pd.DataFrame,
+    pred_col: str,
+    transaction_loss_pct: float = 0.0,
+    k: int = 1,
+) -> pd.DataFrame:
+    """Daily PnL from selecting the top-k predictions each day."""
+    rows = []
+    transaction_loss = transaction_loss_pct / 100.0
+    previous_weights: dict[str, float] = {}
+    for d, grp in df.groupby("Date", sort=True):
+        chosen = grp.sort_values(pred_col, ascending=False).head(k)
+        weight = 1.0 / len(chosen)
+        current_weights = {pair: weight for pair in chosen["pair"]}
+        gross_return = float(chosen["next_ret"].mean())
+        turnover = _portfolio_turnover(previous_weights, current_weights)
+        pnl = gross_return - (transaction_loss * turnover)
+        rows.append(
+            {
+                "Date": d,
+                "pnl": pnl,
+                "gross_return": gross_return,
+                "turnover": turnover,
+                "trade_count": int(len(chosen)),
+                "avg_predicted_prob": float(chosen[pred_col].mean()),
+            }
+        )
+        previous_weights = current_weights
+    return pd.DataFrame(rows).sort_values("Date")
+
+
+def compute_top_quantile_pnl(
+    df: pd.DataFrame,
+    pred_col: str,
+    transaction_loss_pct: float = 0.0,
+    top_quantile: float = 0.10,
+) -> pd.DataFrame:
+    """Daily PnL from selecting the top prediction quantile each day."""
+    rows = []
+    transaction_loss = transaction_loss_pct / 100.0
+    previous_weights: dict[str, float] = {}
+    for d, grp in df.groupby("Date", sort=True):
+        position_count = max(1, int(math.ceil(len(grp) * top_quantile)))
+        chosen = grp.sort_values(pred_col, ascending=False).head(position_count)
+        weight = 1.0 / len(chosen)
+        current_weights = {pair: weight for pair in chosen["pair"]}
+        gross_return = float(chosen["next_ret"].mean())
+        turnover = _portfolio_turnover(previous_weights, current_weights)
+        pnl = gross_return - (transaction_loss * turnover)
+        rows.append(
+            {
+                "Date": d,
+                "pnl": pnl,
+                "gross_return": gross_return,
+                "turnover": turnover,
+                "trade_count": int(len(chosen)),
+                "avg_predicted_prob": float(chosen[pred_col].mean()),
+            }
+        )
+        previous_weights = current_weights
+    return pd.DataFrame(rows).sort_values("Date")
+
+
 def compute_equal_weight_pnl(
     df: pd.DataFrame,
     transaction_loss_pct: float = 0.0,

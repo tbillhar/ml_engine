@@ -13,6 +13,8 @@ from src.config import (
     FEATURE_DATA_FILENAME,
     FIT_DAYS,
     HORIZON,
+    HOLDOUT_DAYS,
+    LIVE_MODEL,
     P_WIN_THRESHOLD,
     STEP_DAYS,
     TEST_DAYS,
@@ -92,6 +94,20 @@ def parse_args() -> argparse.Namespace:
         default=[P_WIN_THRESHOLD],
         help="One or more calibrated win-probability thresholds between 0 and 1.",
     )
+    parser.add_argument(
+        "--holdout-days",
+        nargs="+",
+        type=int,
+        default=[HOLDOUT_DAYS],
+        help="One or more final holdout window sizes, in test dates.",
+    )
+    parser.add_argument(
+        "--live-model",
+        nargs="+",
+        default=[LIVE_MODEL],
+        choices=["ensemble", "lgbm_deep", "logreg"],
+        help="One or more live decision models.",
+    )
     return parser.parse_args()
 
 
@@ -104,7 +120,9 @@ def format_run_name(params: dict[str, int | float]) -> str:
         f"h{params['horizon']}_"
         f"cost{params['transaction_loss_pct']}_"
         f"tdpy{params['trading_days_per_year']}_"
-        f"pwin{params['p_win_threshold']}"
+        f"pwin{params['p_win_threshold']}_"
+        f"holdout{params['holdout_days']}_"
+        f"live{params['live_model']}"
     )
 
 
@@ -127,6 +145,8 @@ def main() -> None:
             args.transaction_loss_pct,
             args.trading_days_per_year,
             args.p_win_threshold,
+            args.holdout_days,
+            args.live_model,
         )
     )
     print(f"Running {len(combos)} experiment(s) using {csv_path.resolve()}")
@@ -144,6 +164,8 @@ def main() -> None:
             "transaction_loss_pct": combo[5],
             "trading_days_per_year": combo[6],
             "p_win_threshold": combo[7],
+            "holdout_days": combo[8],
+            "live_model": combo[9],
         }
         run_name = format_run_name(params)
         run_dir = results_dir / run_name
@@ -163,6 +185,8 @@ def main() -> None:
                 transaction_loss_pct=params["transaction_loss_pct"],
                 trading_days_per_year=params["trading_days_per_year"],
                 p_win_threshold=params["p_win_threshold"],
+                holdout_days=params["holdout_days"],
+                live_model=params["live_model"],
                 output_dir=run_dir,
                 log_fn=log,
             )

@@ -6,6 +6,8 @@ from src.config import (
     CALIBRATION_DAYS,
     FIT_DAYS,
     HORIZON,
+    HOLDOUT_DAYS,
+    LIVE_MODEL,
     P_WIN_THRESHOLD,
     STEP_DAYS,
     TEST_DAYS,
@@ -28,6 +30,8 @@ def main() -> None:
         transaction_loss_pct=TRANSACTION_LOSS_PCT,
         trading_days_per_year=TRADING_DAYS_PER_YEAR,
         p_win_threshold=P_WIN_THRESHOLD,
+        holdout_days=HOLDOUT_DAYS,
+        live_model=LIVE_MODEL,
         output_dir=output_dir,
         log_fn=print,
     )

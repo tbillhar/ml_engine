@@ -19,6 +19,8 @@ PRIMARY_ENSEMBLE_WEIGHTS = {
     "rf": 0.15,
 }
 
+META_COLUMNS = ["Date", "pair", "next_ret", "future_ret", "rel", "profit_target", "ev_target"]
+
 
 def sliding_windows(dates, fit_len: int, calibration_len: int, test_len: int, step: int):
     """Yield (fit_dates, calibration_dates, test_dates) for rolling windows."""
@@ -40,32 +42,66 @@ def make_xy(subdf: pd.DataFrame, date_list, feature_cols: list[str]):
     return s, X, y, g
 
 
+def feature_subset_columns(feature_cols: list[str]) -> dict[str, list[str]]:
+    """Group raw features into reusable specialist subsets."""
+    returns_momentum_prefixes = (
+        "ret_",
+        "mom5_",
+        "mom10_",
+        "rs1_",
+        "rs5_",
+        "rs10_",
+        "rs20_",
+        "rank_ret_",
+        "rank_mom5_",
+        "rank_mom10_",
+        "accel_",
+        "slope20_",
+        "zret20_",
+        "zmom5_20_",
+        "zmom10_20_",
+        "norm_mom5_",
+        "norm_mom10_",
+    )
+    corr_regime_prefixes = (
+        "corr20_",
+        "corr40_",
+        "corr60_",
+        "corr120_",
+        "PC",
+        "PC1_evr",
+        "PC2_evr",
+        "PC3_evr",
+        "avg_corr",
+        "market_vol",
+        "dispersion",
+        "day_of_week",
+        "is_month_end",
+        "is_quarter_end",
+        "prev_top1_",
+        "rank_persist5_",
+        "signal_stability5_",
+    )
+    volatility_prefixes = (
+        "vol30_",
+        "rank_vol30_",
+        "dvol30_",
+    )
+
+    def matching(prefixes: tuple[str, ...]) -> list[str]:
+        return [col for col in feature_cols if col.startswith(prefixes)]
+
+    return {
+        "full": feature_cols,
+        "returns_momentum": matching(returns_momentum_prefixes),
+        "corr_regime": matching(corr_regime_prefixes),
+        "volatility": matching(volatility_prefixes),
+    }
+
+
 def build_models() -> dict[str, object]:
     """Construct the base classifiers used in the ensemble."""
     return {
-        "lgbm_shallow": LGBMClassifier(
-            objective="binary",
-            boosting_type="gbdt",
-            num_leaves=15,
-            learning_rate=0.05,
-            n_estimators=200,
-            min_child_samples=30,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=41,
-            verbosity=-1,
-        ),
-        "lgbm_base": LGBMClassifier(
-            objective="binary",
-            boosting_type="gbdt",
-            num_leaves=63,
-            learning_rate=0.05,
-            n_estimators=300,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            verbosity=-1,
-        ),
         "lgbm_deep": LGBMClassifier(
             objective="binary",
             boosting_type="gbdt",
@@ -76,6 +112,30 @@ def build_models() -> dict[str, object]:
             subsample=0.85,
             colsample_bytree=0.85,
             random_state=43,
+            verbosity=-1,
+        ),
+        "lgbm_deep_returns_momentum": LGBMClassifier(
+            objective="binary",
+            boosting_type="gbdt",
+            num_leaves=63,
+            learning_rate=0.04,
+            n_estimators=300,
+            min_child_samples=20,
+            subsample=0.85,
+            colsample_bytree=0.85,
+            random_state=44,
+            verbosity=-1,
+        ),
+        "lgbm_deep_corr_regime": LGBMClassifier(
+            objective="binary",
+            boosting_type="gbdt",
+            num_leaves=63,
+            learning_rate=0.04,
+            n_estimators=300,
+            min_child_samples=20,
+            subsample=0.85,
+            colsample_bytree=0.85,
+            random_state=45,
             verbosity=-1,
         ),
         "rf": make_pipeline(
@@ -95,6 +155,24 @@ def build_models() -> dict[str, object]:
                 C=1.0,
                 max_iter=1000,
                 random_state=42,
+            ),
+        ),
+        "logreg_returns_momentum": make_pipeline(
+            SimpleImputer(strategy="median"),
+            StandardScaler(),
+            LogisticRegression(
+                C=0.75,
+                max_iter=1000,
+                random_state=43,
+            ),
+        ),
+        "logreg_corr_regime": make_pipeline(
+            SimpleImputer(strategy="median"),
+            StandardScaler(),
+            LogisticRegression(
+                C=0.75,
+                max_iter=1000,
+                random_state=44,
             ),
         ),
     }
@@ -153,6 +231,19 @@ def primary_ensemble_weights(model_names: list[str]) -> dict[str, float]:
     return {name: weight / total for name, weight in active.items()}
 
 
+def model_feature_subset_map(model_names: list[str]) -> dict[str, str]:
+    """Map each model to the feature subset it should consume."""
+    mapping = {name: "full" for name in model_names}
+    for name in model_names:
+        if "returns_momentum" in name:
+            mapping[name] = "returns_momentum"
+        elif "corr_regime" in name:
+            mapping[name] = "corr_regime"
+        elif "volatility" in name:
+            mapping[name] = "volatility"
+    return mapping
+
+
 def run_walkforward_model(
     long_df: pd.DataFrame,
     fit_days: int,
@@ -167,10 +258,10 @@ def run_walkforward_model(
         if log_fn:
             log_fn(message)
 
-    feature_cols = [
-        c for c in long_df.columns
-        if c not in ["Date", "pair", "next_ret", "future_ret", "rel", "profit_target", "ev_target"]
-    ]
+    feature_cols = [c for c in long_df.columns if c not in META_COLUMNS]
+    subset_cols = feature_subset_columns(feature_cols)
+    models = build_models()
+    model_subsets = model_feature_subset_map(list(models))
 
     all_dates = sorted(long_df["Date"].unique())
 
@@ -193,10 +284,16 @@ def run_walkforward_model(
         )
 
         test_sub = test_sub.copy()
-        model_preds: list[np.ndarray] = []
         calibration_preds: dict[str, np.ndarray] = {}
         calibration_briers: dict[str, float] = {}
-        for model_name, base_model in build_models().items():
+        for model_name, base_model in models.items():
+            subset_name = model_subsets[model_name]
+            model_feature_cols = subset_cols[subset_name]
+            if not model_feature_cols:
+                raise ValueError(f"Feature subset '{subset_name}' for model '{model_name}' is empty")
+            X_train = train_sub[model_feature_cols]
+            X_calibration = calibration_sub[model_feature_cols]
+            X_test = test_sub[model_feature_cols]
             model = clone(base_model)
             model.fit(X_train, y_train)
             calibration_scores = predict_positive_scores(model, X_calibration)
@@ -207,7 +304,6 @@ def run_walkforward_model(
             test_scores = predict_positive_scores(model, X_test)
             calibrated_probs = apply_calibrator(calibrator, test_scores)
             test_sub[f"pred_{model_name}"] = calibrated_probs
-            model_preds.append(calibrated_probs)
 
         inverse_weights = inverse_brier_weights(calibration_preds, y_calibration)
         primary_weights = primary_ensemble_weights(list(calibration_preds))
@@ -257,6 +353,7 @@ def run_walkforward_model(
                     "fit_dates": len(fit_dates),
                     "calibration_dates": len(calibration_dates),
                     "test_dates": len(test_dates),
+                    "feature_subset": model_subsets[model_name],
                     "primary_weight": float(primary_weights.get(model_name, 0.0)),
                     "inverse_brier_weight": float(inverse_weights[model_name]),
                     "calibration_brier": float(calibration_briers[model_name]),
@@ -269,6 +366,7 @@ def run_walkforward_model(
                 "fit_dates": len(fit_dates),
                 "calibration_dates": len(calibration_dates),
                 "test_dates": len(test_dates),
+                "feature_subset": "primary_blend",
                 "primary_weight": 1.0,
                 "inverse_brier_weight": np.nan,
                 "calibration_brier": float(ensemble_calibration_brier),
@@ -281,6 +379,7 @@ def run_walkforward_model(
                 "fit_dates": len(fit_dates),
                 "calibration_dates": len(calibration_dates),
                 "test_dates": len(test_dates),
+                "feature_subset": "inverse_brier_blend",
                 "primary_weight": np.nan,
                 "inverse_brier_weight": 1.0,
                 "calibration_brier": float(brier_ensemble_calibration_brier),
@@ -297,11 +396,13 @@ def run_walkforward_model(
                     "profit_target",
                     "ev_target",
                     "rel",
-                    "pred_lgbm_shallow",
-                    "pred_lgbm_base",
                     "pred_lgbm_deep",
+                    "pred_lgbm_deep_returns_momentum",
+                    "pred_lgbm_deep_corr_regime",
                     "pred_rf",
                     "pred_logreg",
+                    "pred_logreg_returns_momentum",
+                    "pred_logreg_corr_regime",
                     "pred_ensemble",
                     "pred_ensemble_brier",
                 ]
