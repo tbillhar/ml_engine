@@ -1,4 +1,4 @@
-"""Sliding-window walk-forward calibrated classifier ensemble utilities."""
+"""Sliding-window walk-forward classifier utilities."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import pandas as pd
 from lightgbm import LGBMClassifier
 from sklearn.base import clone
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import brier_score_loss
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
@@ -18,19 +17,21 @@ PRIMARY_ENSEMBLE_WEIGHTS = {
     "logreg": 0.30,
     "rf": 0.15,
 }
+SPECIALIST_ENSEMBLE_MODELS = [
+    "rf_corr_regime",
+    "logreg_returns_momentum",
+]
 
 META_COLUMNS = ["Date", "pair", "next_ret", "future_ret", "rel", "profit_target", "ev_target"]
 
 
-def sliding_windows(dates, fit_len: int, calibration_len: int, test_len: int, step: int):
-    """Yield (fit_dates, calibration_dates, test_dates) for rolling windows."""
+def sliding_windows(dates, fit_len: int, test_len: int, step: int):
+    """Yield (fit_dates, test_dates) for rolling windows."""
     n = len(dates)
-    total_train_len = fit_len + calibration_len
-    for start in range(0, n - total_train_len - test_len + 1, step):
+    for start in range(0, n - fit_len - test_len + 1, step):
         fit_dates = dates[start:start + fit_len]
-        calibration_dates = dates[start + fit_len:start + total_train_len]
-        test = dates[start + total_train_len:start + total_train_len + test_len]
-        yield fit_dates, calibration_dates, test
+        test_dates = dates[start + fit_len:start + fit_len + test_len]
+        yield fit_dates, test_dates
 
 
 def make_xy(subdf: pd.DataFrame, date_list, feature_cols: list[str]):
@@ -223,27 +224,6 @@ def build_models() -> dict[str, object]:
     }
 
 
-def fit_platt_calibrator(raw_scores: np.ndarray, y_true: np.ndarray):
-    """Fit a logistic calibration layer over one-dimensional model scores."""
-    if len(np.unique(y_true)) < 2:
-        return float(np.mean(y_true))
-    calibrator = LogisticRegression(
-        C=1.0,
-        solver="lbfgs",
-        max_iter=1000,
-        random_state=42,
-    )
-    calibrator.fit(raw_scores.reshape(-1, 1), y_true)
-    return calibrator
-
-
-def apply_calibrator(calibrator, raw_scores: np.ndarray) -> np.ndarray:
-    """Apply a fitted calibrator or a constant fallback probability."""
-    if isinstance(calibrator, float):
-        return np.full(raw_scores.shape[0], calibrator, dtype=float)
-    return calibrator.predict_proba(raw_scores.reshape(-1, 1))[:, 1]
-
-
 def predict_positive_scores(model, X: pd.DataFrame) -> np.ndarray:
     """Return the model score for the positive class."""
     if hasattr(model, "predict_proba"):
@@ -253,22 +233,8 @@ def predict_positive_scores(model, X: pd.DataFrame) -> np.ndarray:
     return model.predict(X)
 
 
-def inverse_brier_weights(
-    calibrated_predictions: dict[str, np.ndarray],
-    y_true: np.ndarray,
-) -> dict[str, float]:
-    """Return normalized inverse-Brier weights for calibrated model predictions."""
-    epsilon = 1e-6
-    inv_scores = {}
-    for model_name, preds in calibrated_predictions.items():
-        brier = brier_score_loss(y_true, preds)
-        inv_scores[model_name] = 1.0 / max(brier, epsilon)
-    total = sum(inv_scores.values())
-    return {model_name: score / total for model_name, score in inv_scores.items()}
-
-
 def primary_ensemble_weights(model_names: list[str]) -> dict[str, float]:
-    """Return normalized fixed ensemble weights for the primary live ensemble."""
+    """Return normalized fixed ensemble weights for the broad diagnostic ensemble."""
     active = {name: PRIMARY_ENSEMBLE_WEIGHTS[name] for name in model_names if name in PRIMARY_ENSEMBLE_WEIGHTS}
     total = sum(active.values())
     if total <= 0:
@@ -291,16 +257,33 @@ def model_feature_subset_map(model_names: list[str]) -> dict[str, str]:
     return mapping
 
 
+def add_specialist_ensemble_scores(test_sub: pd.DataFrame) -> pd.DataFrame:
+    """Build a Top-1 specialist ensemble from daily normalized specialist scores."""
+    ensemble_models = [f"pred_{name}" for name in SPECIALIST_ENSEMBLE_MODELS]
+    missing = [col for col in ensemble_models if col not in test_sub.columns]
+    if missing:
+        raise ValueError(f"Missing specialist ensemble prediction columns: {missing}")
+
+    test_sub = test_sub.copy()
+    ranked_cols = []
+    for model_col in ensemble_models:
+        ranked_col = f"{model_col}__rankpct"
+        ranked_cols.append(ranked_col)
+        test_sub[ranked_col] = test_sub.groupby("Date")[model_col].rank(method="average", pct=True)
+    test_sub["pred_specialist_ensemble"] = test_sub[ranked_cols].mean(axis=1)
+    test_sub.drop(columns=ranked_cols, inplace=True)
+    return test_sub
+
+
 def run_walkforward_model(
     long_df: pd.DataFrame,
     fit_days: int,
-    calibration_days: int,
     test_days: int,
     step_days: int,
-    transaction_loss_pct: float,
     log_fn=None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Run walk-forward calibrated classifier ensemble and return predictions and window diagnostics."""
+    """Run walk-forward classifiers and return predictions and window diagnostics."""
+
     def log(message: str) -> None:
         if log_fn:
             log_fn(message)
@@ -311,134 +294,76 @@ def run_walkforward_model(
     model_subsets = model_feature_subset_map(list(models))
 
     all_dates = sorted(long_df["Date"].unique())
-
     all_test_chunks = []
     window_diagnostics = []
-    window_splits = list(sliding_windows(all_dates, fit_days, calibration_days, test_days, step_days))
+    window_splits = list(sliding_windows(all_dates, fit_days, test_days, step_days))
     prediction_cols = [f"pred_{name}" for name in models]
-    prediction_cols.extend(["pred_ensemble", "pred_ensemble_brier"])
+    prediction_cols.extend(["pred_ensemble", "pred_specialist_ensemble"])
 
-    for window_idx, (fit_dates, calibration_dates, test_dates) in enumerate(window_splits, start=1):
-        train_sub, X_train, y_train, g_train = make_xy(long_df, fit_dates, feature_cols)
-        calibration_sub, X_calibration, y_calibration, g_calibration = make_xy(
-            long_df,
-            calibration_dates,
-            feature_cols,
-        )
-        test_sub, X_test, y_test, g_test = make_xy(long_df, test_dates, feature_cols)
-        _ = (train_sub, g_train, calibration_sub, g_calibration, y_test, g_test, transaction_loss_pct)
+    for window_idx, (fit_dates, test_dates) in enumerate(window_splits, start=1):
+        train_sub, _, y_train, _ = make_xy(long_df, fit_dates, feature_cols)
+        test_sub, _, _, _ = make_xy(long_df, test_dates, feature_cols)
         log(
-            f"Training ensemble window {window_idx}/{len(window_splits)} "
-            f"(fit dates: {len(fit_dates)}, calibration dates: {len(calibration_dates)}, test dates: {len(test_dates)})"
+            f"Training window {window_idx}/{len(window_splits)} "
+            f"(fit dates: {len(fit_dates)}, test dates: {len(test_dates)})"
         )
 
         test_sub = test_sub.copy()
-        calibration_preds: dict[str, np.ndarray] = {}
-        calibration_briers: dict[str, float] = {}
         for model_name, base_model in models.items():
             subset_name = model_subsets[model_name]
             model_feature_cols = subset_cols[subset_name]
             if not model_feature_cols:
                 raise ValueError(f"Feature subset '{subset_name}' for model '{model_name}' is empty")
-            X_train = train_sub[model_feature_cols]
-            X_calibration = calibration_sub[model_feature_cols]
-            X_test = test_sub[model_feature_cols]
             model = clone(base_model)
-            model.fit(X_train, y_train)
-            calibration_scores = predict_positive_scores(model, X_calibration)
-            calibrator = fit_platt_calibrator(calibration_scores, y_calibration)
-            calibration_probs = apply_calibrator(calibrator, calibration_scores)
-            calibration_preds[model_name] = calibration_probs
-            calibration_briers[model_name] = brier_score_loss(y_calibration, calibration_probs)
-            test_scores = predict_positive_scores(model, X_test)
-            calibrated_probs = apply_calibrator(calibrator, test_scores)
-            test_sub[f"pred_{model_name}"] = calibrated_probs
-
-        inverse_weights = inverse_brier_weights(calibration_preds, y_calibration)
-        primary_weights = primary_ensemble_weights(list(calibration_preds))
-        ensemble_calibration_pred = sum(
-            calibration_preds[model_name] * primary_weights[model_name]
-            for model_name in primary_weights
-        )
-        ensemble_calibration_brier = brier_score_loss(y_calibration, ensemble_calibration_pred)
-        brier_ensemble_calibration_pred = sum(
-            calibration_preds[model_name] * inverse_weights[model_name]
-            for model_name in inverse_weights
-        )
-        brier_ensemble_calibration_brier = brier_score_loss(y_calibration, brier_ensemble_calibration_pred)
-        log(
-            "Primary ensemble weights: "
-            + ", ".join(
-                f"{model_name}={primary_weights[model_name]:.6f}"
-                for model_name in primary_weights
-            )
-            + f"; primary_ensemble_brier={ensemble_calibration_brier:.6f}"
-        )
-        log(
-            "Inverse-Brier diagnostic weights: "
-            + ", ".join(
-                f"{model_name}={inverse_weights[model_name]:.6f} (brier={calibration_briers[model_name]:.6f})"
-                for model_name in inverse_weights
-            )
-            + f"; inverse_brier_ensemble_brier={brier_ensemble_calibration_brier:.6f}"
-        )
-        ensemble_pred = sum(
-            test_sub[f"pred_{model_name}"] * primary_weights[model_name]
-            for model_name in primary_weights
-        )
-        brier_ensemble_pred = sum(
-            test_sub[f"pred_{model_name}"] * inverse_weights[model_name]
-            for model_name in inverse_weights
-        )
-        test_sub["pred_ensemble"] = ensemble_pred
-        test_sub["pred_ensemble_brier"] = brier_ensemble_pred
-        test_sub["window_id"] = window_idx
-
-        for model_name in calibration_preds:
+            model.fit(train_sub[model_feature_cols], y_train)
+            test_sub[f"pred_{model_name}"] = predict_positive_scores(model, test_sub[model_feature_cols])
             window_diagnostics.append(
                 {
                     "window_id": window_idx,
                     "model": model_name,
                     "fit_dates": len(fit_dates),
-                    "calibration_dates": len(calibration_dates),
                     "test_dates": len(test_dates),
-                    "feature_subset": model_subsets[model_name],
-                    "primary_weight": float(primary_weights.get(model_name, 0.0)),
-                    "inverse_brier_weight": float(inverse_weights[model_name]),
-                    "calibration_brier": float(calibration_briers[model_name]),
+                    "feature_subset": subset_name,
                 }
             )
+
+        primary_weights = primary_ensemble_weights(list(models))
+        test_sub["pred_ensemble"] = sum(
+            test_sub[f"pred_{model_name}"] * primary_weights[model_name]
+            for model_name in primary_weights
+        )
+        test_sub = add_specialist_ensemble_scores(test_sub)
+        log(
+            "Primary diagnostic ensemble weights: "
+            + ", ".join(f"{model_name}={primary_weights[model_name]:.3f}" for model_name in primary_weights)
+        )
+        log(
+            "Specialist Top-1 ensemble: "
+            + ", ".join(SPECIALIST_ENSEMBLE_MODELS)
+            + " via daily rank averaging"
+        )
+
         window_diagnostics.append(
             {
                 "window_id": window_idx,
                 "model": "pred_ensemble",
                 "fit_dates": len(fit_dates),
-                "calibration_dates": len(calibration_dates),
                 "test_dates": len(test_dates),
-                "feature_subset": "primary_blend",
-                "primary_weight": 1.0,
-                "inverse_brier_weight": np.nan,
-                "calibration_brier": float(ensemble_calibration_brier),
+                "feature_subset": "broad_fixed_blend",
             }
         )
         window_diagnostics.append(
             {
                 "window_id": window_idx,
-                "model": "pred_ensemble_brier",
+                "model": "pred_specialist_ensemble",
                 "fit_dates": len(fit_dates),
-                "calibration_dates": len(calibration_dates),
                 "test_dates": len(test_dates),
-                "feature_subset": "inverse_brier_blend",
-                "primary_weight": np.nan,
-                "inverse_brier_weight": 1.0,
-                "calibration_brier": float(brier_ensemble_calibration_brier),
+                "feature_subset": "rank_blend_rf_corr_regime_logreg_returns_momentum",
             }
         )
-        all_test_chunks.append(
-            test_sub[
-                ["window_id", *META_COLUMNS, *prediction_cols]
-            ]
-        )
+
+        test_sub["window_id"] = window_idx
+        all_test_chunks.append(test_sub[["window_id", *META_COLUMNS, *prediction_cols]])
 
     pred_df = pd.concat(all_test_chunks, ignore_index=True)
     pred_df = pred_df.sort_values(["Date", "pair"]).reset_index(drop=True)

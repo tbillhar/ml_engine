@@ -29,7 +29,7 @@ ProgressFn = Callable[[int], None] | None
 DEFAULT_THRESHOLD_SWEEP = [0.50, 0.52, 0.55, 0.58, 0.60]
 LIVE_MODEL_COLUMNS = {
     "ensemble": "pred_ensemble",
-    "ensemble_brier": "pred_ensemble_brier",
+    "specialist_ensemble": "pred_specialist_ensemble",
     "lgbm_deep": "pred_lgbm_deep",
     "lgbm_deep_returns_momentum": "pred_lgbm_deep_returns_momentum",
     "lgbm_deep_corr_regime": "pred_lgbm_deep_corr_regime",
@@ -391,7 +391,6 @@ def build_diagnostics_summary(
 def run_pipeline(
     csv_path: str,
     fit_days: int,
-    calibration_days: int,
     test_days: int,
     step_days: int,
     horizon: int,
@@ -437,8 +436,8 @@ def run_pipeline(
     long_df["profit_target"] = (long_df["ev_target"] > 0).astype(int)
 
     log(
-        "Running walk-forward ensemble "
-        f"(fit={fit_days}, calibration={calibration_days}, test={test_days}, "
+        "Running walk-forward models "
+        f"(fit={fit_days}, test={test_days}, "
         f"step={step_days}, p_win_threshold={p_win_threshold}, "
         f"holdout_days={holdout_days}, live_model={live_model}, "
         f"live_decision_mode={live_decision_mode})"
@@ -447,10 +446,8 @@ def run_pipeline(
     pred_df, window_diag_df = run_walkforward_model(
         long_df,
         fit_days=fit_days,
-        calibration_days=calibration_days,
         test_days=test_days,
         step_days=step_days,
-        transaction_loss_pct=transaction_loss_pct,
         log_fn=log,
     )
 
@@ -526,45 +523,52 @@ def run_pipeline(
         )
     model_diagnostics_df = pd.DataFrame(diagnostic_rows).sort_values("brier_score")
     single_model_df = model_diagnostics_df[
-        ~model_diagnostics_df["model"].isin(["pred_ensemble", "pred_ensemble_brier"])
+        ~model_diagnostics_df["model"].isin(["pred_ensemble", "pred_specialist_ensemble"])
     ].copy()
     best_single_brier = single_model_df.sort_values("brier_score").iloc[0]
     best_single_return = single_model_df.sort_values("Annualized Return", ascending=False).iloc[0]
     best_single_sharpe = single_model_df.sort_values("Sharpe", ascending=False).iloc[0]
     ensemble_row = model_diagnostics_df[model_diagnostics_df["model"] == "pred_ensemble"].iloc[0]
-    ensemble_brier_row = model_diagnostics_df[model_diagnostics_df["model"] == "pred_ensemble_brier"].iloc[0]
+    specialist_ensemble_row = model_diagnostics_df[
+        model_diagnostics_df["model"] == "pred_specialist_ensemble"
+    ].iloc[0]
     ensemble_benefit_df = pd.DataFrame(
         [
             {
-                "metric": "Primary Ensemble Brier Improvement vs Best Single Brier",
+                "metric": "Broad Ensemble Brier Improvement vs Best Single Brier",
                 "value": float(best_single_brier["brier_score"] - ensemble_row["brier_score"]),
             },
             {
-                "metric": "Primary Ensemble Annualized Return Improvement vs Best Single Return",
+                "metric": "Broad Ensemble Annualized Return Improvement vs Best Single Return",
                 "value": float(ensemble_row["Annualized Return"] - best_single_return["Annualized Return"]),
             },
             {
-                "metric": "Primary Ensemble Sharpe Improvement vs Best Single Sharpe",
+                "metric": "Broad Ensemble Sharpe Improvement vs Best Single Sharpe",
                 "value": float(ensemble_row["Sharpe"] - best_single_sharpe["Sharpe"]),
             },
             {
-                "metric": "Inverse-Brier Ensemble Brier Improvement vs Best Single Brier",
-                "value": float(best_single_brier["brier_score"] - ensemble_brier_row["brier_score"]),
+                "metric": "Specialist Ensemble Brier Improvement vs Best Single Brier",
+                "value": float(best_single_brier["brier_score"] - specialist_ensemble_row["brier_score"]),
             },
             {
-                "metric": "Inverse-Brier Ensemble Annualized Return Improvement vs Best Single Return",
+                "metric": "Specialist Ensemble Annualized Return Improvement vs Best Single Return",
                 "value": float(
-                    ensemble_brier_row["Annualized Return"] - best_single_return["Annualized Return"]
+                    specialist_ensemble_row["Annualized Return"] - best_single_return["Annualized Return"]
                 ),
             },
             {
-                "metric": "Inverse-Brier Ensemble Sharpe Improvement vs Best Single Sharpe",
-                "value": float(ensemble_brier_row["Sharpe"] - best_single_sharpe["Sharpe"]),
+                "metric": "Specialist Ensemble Sharpe Improvement vs Best Single Sharpe",
+                "value": float(specialist_ensemble_row["Sharpe"] - best_single_sharpe["Sharpe"]),
             },
         ]
     )
     bucket_diagnostics_df = build_probability_bucket_diagnostics(eval_pred_df, model_cols)
-    threshold_sweep_models = ["pred_ensemble", "pred_lgbm_deep", "pred_logreg", "pred_rf", "pred_lgbm_deep_returns_momentum"]
+    threshold_sweep_models = [
+        "pred_specialist_ensemble",
+        "pred_rf_corr_regime",
+        "pred_logreg_returns_momentum",
+        "pred_lgbm_deep_corr_regime",
+    ]
     threshold_values = sorted({p_win_threshold, *DEFAULT_THRESHOLD_SWEEP})
     threshold_sweep_df = build_threshold_sweep(
         eval_pred_df,
@@ -585,7 +589,6 @@ def run_pipeline(
             {
                 "csv_path": csv_path,
                 "fit_days": fit_days,
-                "calibration_days": calibration_days,
                 "test_days": test_days,
                 "step_days": step_days,
                 "horizon": horizon,
@@ -636,8 +639,8 @@ def run_pipeline(
         f"brier={best_single_brier['model']}:{best_single_brier['brier_score']:.4f}, "
         f"return={best_single_return['model']}:{best_single_return['Annualized Return']:.4%}, "
         f"sharpe={best_single_sharpe['model']}:{best_single_sharpe['Sharpe']:.4f}; "
-        f"primary_ensemble_brier={ensemble_row['brier_score']:.4f}, "
-        f"inverse_brier_ensemble_brier={ensemble_brier_row['brier_score']:.4f}"
+        f"broad_ensemble_brier={ensemble_row['brier_score']:.4f}, "
+        f"specialist_ensemble_brier={specialist_ensemble_row['brier_score']:.4f}"
     )
     log(
         "Average pairwise prediction correlation: "

@@ -3,7 +3,6 @@
 from pathlib import Path
 
 from src.config import (
-    CALIBRATION_DAYS,
     FIT_DAYS,
     HORIZON,
     LIVE_DECISION_MODE,
@@ -24,7 +23,6 @@ def main() -> None:
     stats_df, _, diagnostics_summary = run_pipeline(
         csv_path=csv_path,
         fit_days=FIT_DAYS,
-        calibration_days=CALIBRATION_DAYS,
         test_days=TEST_DAYS,
         step_days=STEP_DAYS,
         horizon=HORIZON,

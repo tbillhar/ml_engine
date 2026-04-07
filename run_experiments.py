@@ -9,7 +9,6 @@ from pathlib import Path
 import pandas as pd
 
 from src.config import (
-    CALIBRATION_DAYS,
     FEATURE_DATA_FILENAME,
     FIT_DAYS,
     HORIZON,
@@ -45,13 +44,6 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=[FIT_DAYS],
         help="One or more FIT_DAYS values.",
-    )
-    parser.add_argument(
-        "--calibration-days",
-        nargs="+",
-        type=int,
-        default=[CALIBRATION_DAYS],
-        help="One or more CALIBRATION_DAYS values.",
     )
     parser.add_argument(
         "--test-days",
@@ -93,7 +85,7 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         type=float,
         default=[P_WIN_THRESHOLD],
-        help="One or more calibrated win-probability thresholds between 0 and 1.",
+        help="One or more score thresholds between 0 and 1.",
     )
     parser.add_argument(
         "--holdout-days",
@@ -108,7 +100,7 @@ def parse_args() -> argparse.Namespace:
         default=[LIVE_MODEL],
         choices=[
             "ensemble",
-            "ensemble_brier",
+            "specialist_ensemble",
             "lgbm_deep",
             "lgbm_deep_returns_momentum",
             "lgbm_deep_corr_regime",
@@ -136,7 +128,6 @@ def parse_args() -> argparse.Namespace:
 def format_run_name(params: dict[str, int | float]) -> str:
     return (
         f"fit{params['fit_days']}_"
-        f"cal{params['calibration_days']}_"
         f"test{params['test_days']}_"
         f"step{params['step_days']}_"
         f"h{params['horizon']}_"
@@ -161,7 +152,6 @@ def main() -> None:
     combos = list(
         itertools.product(
             args.fit_days,
-            args.calibration_days,
             args.test_days,
             args.step_days,
             args.horizon,
@@ -181,16 +171,15 @@ def main() -> None:
     for idx, combo in enumerate(combos, start=1):
         params = {
             "fit_days": combo[0],
-            "calibration_days": combo[1],
-            "test_days": combo[2],
-            "step_days": combo[3],
-            "horizon": combo[4],
-            "transaction_loss_pct": combo[5],
-            "trading_days_per_year": combo[6],
-            "p_win_threshold": combo[7],
-            "holdout_days": combo[8],
-            "live_model": combo[9],
-            "live_decision_mode": combo[10],
+            "test_days": combo[1],
+            "step_days": combo[2],
+            "horizon": combo[3],
+            "transaction_loss_pct": combo[4],
+            "trading_days_per_year": combo[5],
+            "p_win_threshold": combo[6],
+            "holdout_days": combo[7],
+            "live_model": combo[8],
+            "live_decision_mode": combo[9],
         }
         run_name = format_run_name(params)
         run_dir = results_dir / run_name
@@ -203,7 +192,6 @@ def main() -> None:
             stats_df, plot_path, _ = run_pipeline(
                 csv_path=str(csv_path),
                 fit_days=params["fit_days"],
-                calibration_days=params["calibration_days"],
                 test_days=params["test_days"],
                 step_days=params["step_days"],
                 horizon=params["horizon"],
