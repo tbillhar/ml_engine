@@ -52,7 +52,7 @@ from src.config import (
     TRANSACTION_LOSS_PCT,
 )
 from src.feature_dataset_builder import build_feature_dataset
-from src.pipeline_runner import run_pipeline
+from src.pipeline_runner import diagnostics_guide_text, run_pipeline
 from src.raw_data_loader import download_raw_fx_data
 
 
@@ -251,6 +251,9 @@ class FXPipelineWindow(QMainWindow):
         self.diagnostics_summary = QPlainTextEdit()
         self.diagnostics_summary.setReadOnly(True)
         self.diagnostics_summary.setPlaceholderText("Key observations from diagnostics will appear here after a run.")
+        self.diagnostics_guide = QPlainTextEdit()
+        self.diagnostics_guide.setReadOnly(True)
+        self.diagnostics_guide.setPlainText(diagnostics_guide_text())
 
         self.plot_label = QLabel("PnL plot will appear here after a run.")
         self.plot_label.setAlignment(Qt.AlignCenter)
@@ -299,6 +302,8 @@ class FXPipelineWindow(QMainWindow):
         right_layout.addWidget(self.summary_table, 1)
         right_layout.addWidget(QLabel("Key Observations"))
         right_layout.addWidget(self.diagnostics_summary, 1)
+        right_layout.addWidget(QLabel("Diagnostics Guide"))
+        right_layout.addWidget(self.diagnostics_guide, 1)
         right_layout.addWidget(QLabel("PnL Plot"))
         right_layout.addWidget(self.plot_label, 2)
 

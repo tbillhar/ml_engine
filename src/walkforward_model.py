@@ -18,7 +18,7 @@ PRIMARY_ENSEMBLE_WEIGHTS = {
     "rf": 0.15,
 }
 SPECIALIST_ENSEMBLE_MODELS = [
-    "rf_corr_regime",
+    "lgbm_deep_returns_momentum",
     "logreg_returns_momentum",
 ]
 
@@ -358,7 +358,7 @@ def run_walkforward_model(
                 "model": "pred_specialist_ensemble",
                 "fit_dates": len(fit_dates),
                 "test_dates": len(test_dates),
-                "feature_subset": "rank_blend_rf_corr_regime_logreg_returns_momentum",
+                "feature_subset": "rank_blend_lgbm_deep_returns_momentum_logreg_returns_momentum",
             }
         )
 

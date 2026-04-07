@@ -1,4 +1,4 @@
-"""PnL computation and summary statistics for probability-threshold strategy outputs."""
+"""PnL computation and summary statistics for score-based strategy outputs."""
 
 from __future__ import annotations
 
@@ -36,13 +36,13 @@ def compute_threshold_pnl(
             current_weights: dict[str, float] = {}
             gross_return = 0.0
             trade_count = 0
-            avg_predicted_prob = np.nan
+            avg_selected_score = np.nan
         else:
             weight = 1.0 / len(eligible)
             current_weights = {pair: weight for pair in eligible["pair"]}
             gross_return = float(eligible["next_ret"].mean())
             trade_count = int(len(eligible))
-            avg_predicted_prob = float(eligible[pred_col].mean())
+            avg_selected_score = float(eligible[pred_col].mean())
 
         turnover = _portfolio_turnover(previous_weights, current_weights)
         pnl = gross_return - (transaction_loss * turnover)
@@ -53,7 +53,7 @@ def compute_threshold_pnl(
                 "gross_return": gross_return,
                 "turnover": turnover,
                 "trade_count": trade_count,
-                "avg_predicted_prob": avg_predicted_prob,
+                "avg_selected_score": avg_selected_score,
             }
         )
         previous_weights = current_weights
@@ -84,7 +84,7 @@ def compute_top_k_pnl(
                 "gross_return": gross_return,
                 "turnover": turnover,
                 "trade_count": int(len(chosen)),
-                "avg_predicted_prob": float(chosen[pred_col].mean()),
+                "avg_selected_score": float(chosen[pred_col].mean()),
             }
         )
         previous_weights = current_weights
@@ -116,7 +116,7 @@ def compute_top_quantile_pnl(
                 "gross_return": gross_return,
                 "turnover": turnover,
                 "trade_count": int(len(chosen)),
-                "avg_predicted_prob": float(chosen[pred_col].mean()),
+                "avg_selected_score": float(chosen[pred_col].mean()),
             }
         )
         previous_weights = current_weights
@@ -143,7 +143,7 @@ def compute_equal_weight_pnl(
                 "gross_return": float(grp["next_ret"].mean()),
                 "turnover": turnover,
                 "trade_count": int(len(grp)),
-                "avg_predicted_prob": np.nan,
+                "avg_selected_score": np.nan,
             }
         )
         previous_weights = current_weights
@@ -181,9 +181,9 @@ def perf_stats(df: pd.DataFrame, trading_days_per_year: int) -> dict[str, float]
     avg_trade_count = float(df["trade_count"].mean()) if "trade_count" in df.columns and not df.empty else np.nan
     trade_days = int((df["trade_count"] > 0).sum()) if "trade_count" in df.columns else 0
     trade_rate = trade_days / n_periods if n_periods else np.nan
-    avg_predicted_prob = (
-        float(df["avg_predicted_prob"].dropna().mean())
-        if "avg_predicted_prob" in df.columns and not df["avg_predicted_prob"].dropna().empty
+    avg_selected_score = (
+        float(df["avg_selected_score"].dropna().mean())
+        if "avg_selected_score" in df.columns and not df["avg_selected_score"].dropna().empty
         else np.nan
     )
     return {
@@ -194,5 +194,5 @@ def perf_stats(df: pd.DataFrame, trading_days_per_year: int) -> dict[str, float]
         "Avg Turnover": avg_turnover,
         "Avg Trades/Day": avg_trade_count,
         "Trade Rate": trade_rate,
-        "Avg Predicted P(Win)": avg_predicted_prob,
+        "Avg Selected Score": avg_selected_score,
     }
