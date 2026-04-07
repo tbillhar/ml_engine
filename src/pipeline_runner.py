@@ -29,8 +29,18 @@ ProgressFn = Callable[[int], None] | None
 DEFAULT_THRESHOLD_SWEEP = [0.50, 0.52, 0.55, 0.58, 0.60]
 LIVE_MODEL_COLUMNS = {
     "ensemble": "pred_ensemble",
+    "ensemble_brier": "pred_ensemble_brier",
     "lgbm_deep": "pred_lgbm_deep",
+    "lgbm_deep_returns_momentum": "pred_lgbm_deep_returns_momentum",
+    "lgbm_deep_corr_regime": "pred_lgbm_deep_corr_regime",
+    "lgbm_deep_volatility": "pred_lgbm_deep_volatility",
+    "rf": "pred_rf",
+    "rf_returns_momentum": "pred_rf_returns_momentum",
+    "rf_corr_regime": "pred_rf_corr_regime",
     "logreg": "pred_logreg",
+    "logreg_returns_momentum": "pred_logreg_returns_momentum",
+    "logreg_corr_regime": "pred_logreg_corr_regime",
+    "logreg_volatility": "pred_logreg_volatility",
 }
 
 
@@ -308,6 +318,76 @@ def strategy_frame(
     return strategy_series, stats_df
 
 
+def resolve_live_strategy_name(live_model_label: str, live_decision_mode: str) -> str:
+    """Map the user-facing live decision mode to a strategy row name."""
+    strategy_name_map = {
+        "threshold": f"{live_model_label} Threshold",
+        "threshold_top1": f"{live_model_label} Threshold Top-1",
+        "threshold_top3": f"{live_model_label} Threshold Top-3",
+        "top1": f"{live_model_label} Top-1",
+        "top3": f"{live_model_label} Top-3",
+        "top_decile": f"{live_model_label} Top-Decile",
+    }
+    if live_decision_mode not in strategy_name_map:
+        raise ValueError(
+            f"Unsupported LIVE_DECISION_MODE '{live_decision_mode}'. "
+            f"Expected one of: {sorted(strategy_name_map)}"
+        )
+    return strategy_name_map[live_decision_mode]
+
+
+def build_diagnostics_summary(
+    selected_strategy_name: str,
+    holdout_stats_df: pd.DataFrame,
+    top_selection_df: pd.DataFrame,
+    model_diagnostics_df: pd.DataFrame,
+    correlation_df: pd.DataFrame,
+) -> str:
+    """Create a concise human-readable diagnostics summary for the GUI."""
+    selected_row = holdout_stats_df[holdout_stats_df["strategy"] == selected_strategy_name].iloc[0]
+    top1_df = top_selection_df[top_selection_df["selection"] == "top1"].sort_values(
+        ["Sharpe", "Annualized Return"],
+        ascending=[False, False],
+    )
+    top3_df = top_selection_df[top_selection_df["selection"] == "top3"].sort_values(
+        ["Sharpe", "Annualized Return"],
+        ascending=[False, False],
+    )
+    best_top1 = top1_df.iloc[0]
+    best_top3 = top3_df.iloc[0]
+    best_threshold_model = model_diagnostics_df.sort_values(
+        ["Sharpe", "Annualized Return"],
+        ascending=[False, False],
+    ).iloc[0]
+    avg_corr = correlation_df.where(~np.eye(len(correlation_df), dtype=bool)).stack().mean()
+    return "\n".join(
+        [
+            (
+                f"Selected live strategy: {selected_strategy_name} | "
+                f"Holdout AnnRet {selected_row['Annualized Return'] * 100:.1f}% | "
+                f"Sharpe {selected_row['Sharpe']:.2f}"
+            ),
+            (
+                f"Best holdout Top-1 selector: {best_top1['model']} | "
+                f"AnnRet {best_top1['Annualized Return'] * 100:.1f}% | "
+                f"Sharpe {best_top1['Sharpe']:.2f} | "
+                f"Win rate {best_top1['realized_win_rate'] * 100:.1f}%"
+            ),
+            (
+                f"Best holdout Top-3 selector: {best_top3['model']} | "
+                f"AnnRet {best_top3['Annualized Return'] * 100:.1f}% | "
+                f"Sharpe {best_top3['Sharpe']:.2f}"
+            ),
+            (
+                f"Best threshold model: {best_threshold_model['model']} | "
+                f"AnnRet {best_threshold_model['Annualized Return'] * 100:.1f}% | "
+                f"Sharpe {best_threshold_model['Sharpe']:.2f}"
+            ),
+            f"Average pairwise prediction correlation: {avg_corr:.3f}",
+        ]
+    )
+
+
 def run_pipeline(
     csv_path: str,
     fit_days: int,
@@ -320,10 +400,11 @@ def run_pipeline(
     p_win_threshold: float,
     holdout_days: int,
     live_model: str,
+    live_decision_mode: str,
     output_dir: Path,
     log_fn: LogFn = None,
     progress_fn: ProgressFn = None,
-) -> tuple[pd.DataFrame, Path]:
+) -> tuple[pd.DataFrame, Path, str]:
     """Run the existing FX pipeline and save artifacts to output_dir."""
 
     def log(msg: str) -> None:
@@ -359,7 +440,8 @@ def run_pipeline(
         "Running walk-forward ensemble "
         f"(fit={fit_days}, calibration={calibration_days}, test={test_days}, "
         f"step={step_days}, p_win_threshold={p_win_threshold}, "
-        f"holdout_days={holdout_days}, live_model={live_model})"
+        f"holdout_days={holdout_days}, live_model={live_model}, "
+        f"live_decision_mode={live_decision_mode})"
     )
     set_progress(60)
     pred_df, window_diag_df = run_walkforward_model(
@@ -405,6 +487,7 @@ def run_pipeline(
         trading_days_per_year=trading_days_per_year,
         live_model_label=live_model,
     )
+    selected_strategy_name = resolve_live_strategy_name(live_model, live_decision_mode)
     holdout_curves = {
         name: cumulative_annualized_curve(series_df, trading_days_per_year=trading_days_per_year)
         for name, series_df in holdout_strategy_series
@@ -511,6 +594,7 @@ def run_pipeline(
                 "p_win_threshold": p_win_threshold,
                 "holdout_days": holdout_days,
                 "live_model": live_model,
+                "live_decision_mode": live_decision_mode,
                 "live_prediction_column": live_pred_col,
                 "research_test_dates": int(research_pred_df["Date"].nunique()),
                 "holdout_test_dates": int(holdout_pred_df["Date"].nunique()),
@@ -532,6 +616,14 @@ def run_pipeline(
     bucket_diagnostics_df.to_csv(output_dir / "probability_bucket_diagnostics.csv", index=False)
     threshold_sweep_df.to_csv(output_dir / "threshold_sweep.csv", index=False)
     top_selection_df.to_csv(output_dir / "top_selection_diagnostics.csv", index=False)
+    diagnostics_summary = build_diagnostics_summary(
+        selected_strategy_name=selected_strategy_name,
+        holdout_stats_df=holdout_stats_df,
+        top_selection_df=top_selection_df,
+        model_diagnostics_df=model_diagnostics_df,
+        correlation_df=correlation_df,
+    )
+    (output_dir / "diagnostics_summary.txt").write_text(diagnostics_summary, encoding="utf-8")
 
     holdout_stats_df.to_csv(output_dir / "performance_summary.csv", index=False)
     research_stats_df.to_csv(output_dir / "performance_summary_research.csv", index=False)
@@ -558,7 +650,15 @@ def run_pipeline(
     plt.figure(figsize=(12, 6))
     for strategy_name in [f"{live_model} Threshold", f"{live_model} Threshold Top-1", f"{live_model} Top-1", f"{live_model} Top-3", f"{live_model} Top-Decile", "Equal-weight"]:
         curve_df = holdout_curves[strategy_name]
-        plt.plot(curve_df["Date"], curve_df["cum_ann"], label=strategy_name, linewidth=2.0 if "Equal-weight" not in strategy_name else 1.8, linestyle="--" if strategy_name == "Equal-weight" else "-")
+        is_selected = strategy_name == selected_strategy_name
+        plt.plot(
+            curve_df["Date"],
+            curve_df["cum_ann"],
+            label=strategy_name,
+            linewidth=2.8 if is_selected else (1.8 if strategy_name == "Equal-weight" else 2.0),
+            linestyle="--" if strategy_name == "Equal-weight" else "-",
+            alpha=1.0 if is_selected else 0.8,
+        )
     plt.title(f"Holdout Cumulative Annualized Return From {live_model} Decisions")
     plt.xlabel("Date")
     plt.ylabel("Cumulative Annualized Return %")
@@ -571,4 +671,4 @@ def run_pipeline(
 
     set_progress(100)
     log(f"Done. Outputs saved to: {output_dir.resolve()}")
-    return holdout_stats_df, plot_path
+    return holdout_stats_df, plot_path, diagnostics_summary

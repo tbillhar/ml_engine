@@ -13,6 +13,7 @@ from src.config import (
     FEATURE_DATA_FILENAME,
     FIT_DAYS,
     HORIZON,
+    LIVE_DECISION_MODE,
     HOLDOUT_DAYS,
     LIVE_MODEL,
     P_WIN_THRESHOLD,
@@ -105,8 +106,29 @@ def parse_args() -> argparse.Namespace:
         "--live-model",
         nargs="+",
         default=[LIVE_MODEL],
-        choices=["ensemble", "lgbm_deep", "logreg"],
+        choices=[
+            "ensemble",
+            "ensemble_brier",
+            "lgbm_deep",
+            "lgbm_deep_returns_momentum",
+            "lgbm_deep_corr_regime",
+            "lgbm_deep_volatility",
+            "rf",
+            "rf_returns_momentum",
+            "rf_corr_regime",
+            "logreg",
+            "logreg_returns_momentum",
+            "logreg_corr_regime",
+            "logreg_volatility",
+        ],
         help="One or more live decision models.",
+    )
+    parser.add_argument(
+        "--live-decision-mode",
+        nargs="+",
+        default=[LIVE_DECISION_MODE],
+        choices=["threshold", "threshold_top1", "threshold_top3", "top1", "top3", "top_decile"],
+        help="One or more live decision modes.",
     )
     return parser.parse_args()
 
@@ -122,7 +144,8 @@ def format_run_name(params: dict[str, int | float]) -> str:
         f"tdpy{params['trading_days_per_year']}_"
         f"pwin{params['p_win_threshold']}_"
         f"holdout{params['holdout_days']}_"
-        f"live{params['live_model']}"
+        f"live{params['live_model']}_"
+        f"mode{params['live_decision_mode']}"
     )
 
 
@@ -147,6 +170,7 @@ def main() -> None:
             args.p_win_threshold,
             args.holdout_days,
             args.live_model,
+            args.live_decision_mode,
         )
     )
     print(f"Running {len(combos)} experiment(s) using {csv_path.resolve()}")
@@ -166,6 +190,7 @@ def main() -> None:
             "p_win_threshold": combo[7],
             "holdout_days": combo[8],
             "live_model": combo[9],
+            "live_decision_mode": combo[10],
         }
         run_name = format_run_name(params)
         run_dir = results_dir / run_name
@@ -175,7 +200,7 @@ def main() -> None:
             print(f"  {message}")
 
         try:
-            stats_df, plot_path = run_pipeline(
+            stats_df, plot_path, _ = run_pipeline(
                 csv_path=str(csv_path),
                 fit_days=params["fit_days"],
                 calibration_days=params["calibration_days"],
@@ -187,6 +212,7 @@ def main() -> None:
                 p_win_threshold=params["p_win_threshold"],
                 holdout_days=params["holdout_days"],
                 live_model=params["live_model"],
+                live_decision_mode=params["live_decision_mode"],
                 output_dir=run_dir,
                 log_fn=log,
             )

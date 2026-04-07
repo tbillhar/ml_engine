@@ -6,6 +6,7 @@ from src.config import (
     CALIBRATION_DAYS,
     FIT_DAYS,
     HORIZON,
+    LIVE_DECISION_MODE,
     HOLDOUT_DAYS,
     LIVE_MODEL,
     P_WIN_THRESHOLD,
@@ -20,7 +21,7 @@ from src.pipeline_runner import run_pipeline
 def main() -> None:
     csv_path = "data/fx_features_wide.csv"
     output_dir = Path("outputs")
-    stats_df, _ = run_pipeline(
+    stats_df, _, diagnostics_summary = run_pipeline(
         csv_path=csv_path,
         fit_days=FIT_DAYS,
         calibration_days=CALIBRATION_DAYS,
@@ -32,6 +33,7 @@ def main() -> None:
         p_win_threshold=P_WIN_THRESHOLD,
         holdout_days=HOLDOUT_DAYS,
         live_model=LIVE_MODEL,
+        live_decision_mode=LIVE_DECISION_MODE,
         output_dir=output_dir,
         log_fn=print,
     )
@@ -41,6 +43,8 @@ def main() -> None:
         stats = row.drop(labels=["strategy"]).to_dict()
         print(f"{strategy} stats:", stats)
 
+    print("=====================================")
+    print(diagnostics_summary)
     print("=====================================")
     print("PIPELINE COMPLETED SUCCESSFULLY")
     print(f"Outputs saved to: {output_dir.resolve()}")

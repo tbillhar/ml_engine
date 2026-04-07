@@ -43,6 +43,7 @@ from src.config import (
     FIT_DAYS,
     HORIZON,
     HOLDOUT_DAYS,
+    LIVE_DECISION_MODE,
     LIVE_MODEL,
     P_WIN_THRESHOLD,
     RAW_DATA_FILENAME,
@@ -61,7 +62,7 @@ class PipelineWorker(QObject):
 
     log = Signal(str)
     progress = Signal(int)
-    completed = Signal(object, str)
+    completed = Signal(object, str, str)
     failed = Signal(str)
 
     def __init__(
@@ -77,6 +78,7 @@ class PipelineWorker(QObject):
         p_win_threshold: float,
         holdout_days: int,
         live_model: str,
+        live_decision_mode: str,
         output_dir: Path,
     ) -> None:
         super().__init__()
@@ -91,11 +93,12 @@ class PipelineWorker(QObject):
         self.p_win_threshold = p_win_threshold
         self.holdout_days = holdout_days
         self.live_model = live_model
+        self.live_decision_mode = live_decision_mode
         self.output_dir = output_dir
 
     def run(self) -> None:
         try:
-            stats_df, plot_path = run_pipeline(
+            stats_df, plot_path, diagnostics_summary = run_pipeline(
                 csv_path=self.csv_path,
                 fit_days=self.fit_days,
                 calibration_days=self.calibration_days,
@@ -107,11 +110,12 @@ class PipelineWorker(QObject):
                 p_win_threshold=self.p_win_threshold,
                 holdout_days=self.holdout_days,
                 live_model=self.live_model,
+                live_decision_mode=self.live_decision_mode,
                 output_dir=self.output_dir,
                 log_fn=self.log.emit,
                 progress_fn=self.progress.emit,
             )
-            self.completed.emit(stats_df, str(plot_path))
+            self.completed.emit(stats_df, str(plot_path), diagnostics_summary)
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
 
@@ -199,8 +203,29 @@ class FXPipelineWindow(QMainWindow):
         self.p_win_threshold_input = QLineEdit(str(P_WIN_THRESHOLD))
         self.holdout_days_input = QLineEdit(str(HOLDOUT_DAYS))
         self.live_model_input = QComboBox()
-        self.live_model_input.addItems(["ensemble", "lgbm_deep", "logreg"])
+        self.live_model_input.addItems(
+            [
+                "ensemble",
+                "ensemble_brier",
+                "lgbm_deep",
+                "lgbm_deep_returns_momentum",
+                "lgbm_deep_corr_regime",
+                "lgbm_deep_volatility",
+                "rf",
+                "rf_returns_momentum",
+                "rf_corr_regime",
+                "logreg",
+                "logreg_returns_momentum",
+                "logreg_corr_regime",
+                "logreg_volatility",
+            ]
+        )
         self.live_model_input.setCurrentText(LIVE_MODEL)
+        self.live_decision_mode_input = QComboBox()
+        self.live_decision_mode_input.addItems(
+            ["threshold", "threshold_top1", "threshold_top3", "top1", "top3", "top_decile"]
+        )
+        self.live_decision_mode_input.setCurrentText(LIVE_DECISION_MODE)
 
         self.run_btn = QPushButton("Run Pipeline")
         self.run_btn.clicked.connect(self.start_pipeline)
@@ -228,6 +253,10 @@ class FXPipelineWindow(QMainWindow):
             ]
         )
 
+        self.diagnostics_summary = QPlainTextEdit()
+        self.diagnostics_summary.setReadOnly(True)
+        self.diagnostics_summary.setPlaceholderText("Key observations from diagnostics will appear here after a run.")
+
         self.plot_label = QLabel("PnL plot will appear here after a run.")
         self.plot_label.setAlignment(Qt.AlignCenter)
 
@@ -250,6 +279,7 @@ class FXPipelineWindow(QMainWindow):
         params_form.addRow("P_WIN_THRESHOLD", self.p_win_threshold_input)
         params_form.addRow("HOLDOUT_DAYS", self.holdout_days_input)
         params_form.addRow("LIVE_MODEL", self.live_model_input)
+        params_form.addRow("LIVE_DECISION_MODE", self.live_decision_mode_input)
 
         action_row = QHBoxLayout()
         action_row.addWidget(self.download_raw_btn)
@@ -273,6 +303,8 @@ class FXPipelineWindow(QMainWindow):
         right_layout = QVBoxLayout(right_panel)
         right_layout.addWidget(QLabel("Performance Summary"))
         right_layout.addWidget(self.summary_table, 1)
+        right_layout.addWidget(QLabel("Key Observations"))
+        right_layout.addWidget(self.diagnostics_summary, 1)
         right_layout.addWidget(QLabel("PnL Plot"))
         right_layout.addWidget(self.plot_label, 2)
 
@@ -410,6 +442,7 @@ class FXPipelineWindow(QMainWindow):
             )
             holdout_days = self._read_int(self.holdout_days_input, "HOLDOUT_DAYS")
             live_model = self.live_model_input.currentText().strip()
+            live_decision_mode = self.live_decision_mode_input.currentText().strip()
             if p_win_threshold > 1:
                 raise ValueError("P_WIN_THRESHOLD must be between 0 and 1")
         except Exception as exc:  # noqa: BLE001
@@ -422,6 +455,7 @@ class FXPipelineWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.status_label.setText("Status: Running...")
         self.logs.clear()
+        self.diagnostics_summary.clear()
         self.append_log("Starting pipeline...")
 
         self.pipeline_thread = QThread()
@@ -437,6 +471,7 @@ class FXPipelineWindow(QMainWindow):
             p_win_threshold=p_win_threshold,
             holdout_days=holdout_days,
             live_model=live_model,
+            live_decision_mode=live_decision_mode,
             output_dir=self.output_dir,
         )
         self.pipeline_worker.moveToThread(self.pipeline_thread)
@@ -454,9 +489,10 @@ class FXPipelineWindow(QMainWindow):
 
         self.pipeline_thread.start()
 
-    def on_pipeline_completed(self, stats_df: pd.DataFrame, plot_path: str) -> None:
+    def on_pipeline_completed(self, stats_df: pd.DataFrame, plot_path: str, diagnostics_summary: str) -> None:
         self.status_label.setText("Status: Done")
         self.populate_summary_table(stats_df)
+        self.diagnostics_summary.setPlainText(diagnostics_summary)
         self.load_plot(plot_path)
         self.append_log("Pipeline completed successfully.")
 
