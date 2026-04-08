@@ -45,6 +45,7 @@ from src.config import (
     LIVE_MODEL,
     RAW_DATA_FILENAME,
     SPECIALIST_ENSEMBLE_MEMBERS,
+    SPECIALIST_WEIGHT_LOOKBACK_DAYS,
     STEP_DAYS,
     TEST_DAYS,
     TRADING_DAYS_PER_YEAR,
@@ -75,6 +76,7 @@ class PipelineWorker(QObject):
         holdout_days: int,
         live_model: str,
         specialist_ensemble_members: list[str],
+        specialist_weight_lookback_days: int,
         output_dir: Path,
     ) -> None:
         super().__init__()
@@ -88,6 +90,7 @@ class PipelineWorker(QObject):
         self.holdout_days = holdout_days
         self.live_model = live_model
         self.specialist_ensemble_members = specialist_ensemble_members
+        self.specialist_weight_lookback_days = specialist_weight_lookback_days
         self.output_dir = output_dir
 
     def run(self) -> None:
@@ -103,6 +106,7 @@ class PipelineWorker(QObject):
                 holdout_days=self.holdout_days,
                 live_model=self.live_model,
                 specialist_ensemble_models=self.specialist_ensemble_members,
+                specialist_weight_lookback_days=self.specialist_weight_lookback_days,
                 output_dir=self.output_dir,
                 log_fn=self.log.emit,
                 progress_fn=self.progress.emit,
@@ -193,6 +197,7 @@ class FXPipelineWindow(QMainWindow):
         self.trading_days_input = QLineEdit(str(TRADING_DAYS_PER_YEAR))
         self.holdout_days_input = QLineEdit(str(HOLDOUT_DAYS))
         self.specialist_members_input = QLineEdit(",".join(SPECIALIST_ENSEMBLE_MEMBERS))
+        self.specialist_lookback_input = QLineEdit(str(SPECIALIST_WEIGHT_LOOKBACK_DAYS))
         self.live_model_input = QComboBox()
         self.live_model_input.addItems(
             [
@@ -244,7 +249,9 @@ class FXPipelineWindow(QMainWindow):
         self.diagnostics_summary.setPlaceholderText("Key observations from diagnostics will appear here after a run.")
         self.diagnostics_guide = QPlainTextEdit()
         self.diagnostics_guide.setReadOnly(True)
-        self.diagnostics_guide.setPlainText(diagnostics_guide_text())
+        self.diagnostics_guide.setPlainText(
+            diagnostics_guide_text(SPECIALIST_ENSEMBLE_MEMBERS, SPECIALIST_WEIGHT_LOOKBACK_DAYS)
+        )
 
         self.plot_label = QLabel("PnL plot will appear here after a run.")
         self.plot_label.setAlignment(Qt.AlignCenter)
@@ -268,6 +275,7 @@ class FXPipelineWindow(QMainWindow):
         params_form.addRow("TRADING_DAYS_PER_YEAR", self.trading_days_input)
         params_form.addRow("HOLDOUT_DAYS", self.holdout_days_input)
         params_form.addRow("SPECIALIST_ENSEMBLE_MEMBERS", self.specialist_members_input)
+        params_form.addRow("SPECIALIST_WEIGHT_LOOKBACK_DAYS", self.specialist_lookback_input)
         params_form.addRow("LIVE_MODEL", self.live_model_input)
 
         action_row = QHBoxLayout()
@@ -430,6 +438,10 @@ class FXPipelineWindow(QMainWindow):
             )
             holdout_days = self._read_int(self.holdout_days_input, "HOLDOUT_DAYS")
             live_model = self.live_model_input.currentText().strip()
+            specialist_weight_lookback_days = self._read_int(
+                self.specialist_lookback_input,
+                "SPECIALIST_WEIGHT_LOOKBACK_DAYS",
+            )
             specialist_ensemble_members = [
                 item.strip()
                 for item in self.specialist_members_input.text().split(",")
@@ -448,7 +460,9 @@ class FXPipelineWindow(QMainWindow):
         self.status_label.setText("Status: Running...")
         self.logs.clear()
         self.diagnostics_summary.clear()
-        self.diagnostics_guide.setPlainText(diagnostics_guide_text(specialist_ensemble_members))
+        self.diagnostics_guide.setPlainText(
+            diagnostics_guide_text(specialist_ensemble_members, specialist_weight_lookback_days)
+        )
         self.append_log("Starting pipeline...")
 
         self.pipeline_thread = QThread()
@@ -463,6 +477,7 @@ class FXPipelineWindow(QMainWindow):
             holdout_days=holdout_days,
             live_model=live_model,
             specialist_ensemble_members=specialist_ensemble_members,
+            specialist_weight_lookback_days=specialist_weight_lookback_days,
             output_dir=self.output_dir,
         )
         self.pipeline_worker.moveToThread(self.pipeline_thread)

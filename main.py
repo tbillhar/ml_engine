@@ -8,6 +8,7 @@ from src.config import (
     HOLDOUT_DAYS,
     LIVE_MODEL,
     SPECIALIST_ENSEMBLE_MEMBERS,
+    SPECIALIST_WEIGHT_LOOKBACK_DAYS,
     STEP_DAYS,
     TEST_DAYS,
     TRADING_DAYS_PER_YEAR,
@@ -19,7 +20,7 @@ from src.pipeline_runner import run_pipeline
 def main() -> None:
     csv_path = "data/fx_features_wide.csv"
     output_dir = Path("outputs")
-    stats_df, _, diagnostics_summary = run_pipeline(
+    stats_df, _, _, diagnostics_summary = run_pipeline(
         csv_path=csv_path,
         fit_days=FIT_DAYS,
         test_days=TEST_DAYS,
@@ -30,14 +31,15 @@ def main() -> None:
         holdout_days=HOLDOUT_DAYS,
         live_model=LIVE_MODEL,
         specialist_ensemble_models=SPECIALIST_ENSEMBLE_MEMBERS,
+        specialist_weight_lookback_days=SPECIALIST_WEIGHT_LOOKBACK_DAYS,
         output_dir=output_dir,
         log_fn=print,
     )
 
     for _, row in stats_df.iterrows():
-        strategy = row["strategy"]
-        stats = row.drop(labels=["strategy"]).to_dict()
-        print(f"{strategy} stats:", stats)
+        model = row["model"]
+        stats = row.drop(labels=["model"]).to_dict()
+        print(f"{model} stats:", stats)
 
     print("=====================================")
     print(diagnostics_summary)

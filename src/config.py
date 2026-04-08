@@ -12,6 +12,7 @@ SPECIALIST_ENSEMBLE_MEMBERS = [
     "lgbm_deep_returns_momentum",
     "logreg_returns_momentum",
 ]
+SPECIALIST_WEIGHT_LOOKBACK_DAYS = 60
 RAW_DATA_FILENAME = "fx_raw_ohlc.csv"
 FEATURE_DATA_FILENAME = "fx_features_full.csv"
 YAHOO_DOWNLOAD_PERIOD = "1000d"

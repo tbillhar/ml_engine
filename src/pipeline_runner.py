@@ -131,12 +131,20 @@ def build_ensemble_benefit(
     return pd.DataFrame(rows)
 
 
-def diagnostics_guide_text(specialist_ensemble_models: list[str] | None = None) -> str:
+def diagnostics_guide_text(
+    specialist_ensemble_models: list[str] | None = None,
+    specialist_weight_lookback_days: int | None = None,
+) -> str:
     """Return a concise guide to the main diagnostics and ensemble construction."""
     specialist_text = (
         ", ".join(specialist_ensemble_models)
         if specialist_ensemble_models
         else "configured specialist members"
+    )
+    lookback_text = (
+        str(specialist_weight_lookback_days)
+        if specialist_weight_lookback_days is not None
+        else "configured lookback"
     )
     return "\n".join(
         [
@@ -155,7 +163,10 @@ def diagnostics_guide_text(specialist_ensemble_models: list[str] | None = None) 
             "",
             "Ensembles",
             "- pred_ensemble: fixed-weight broad blend of lgbm_deep, logreg, and rf scores.",
-            f"- pred_specialist_ensemble: equal-weight daily rank-percentile blend of {specialist_text}.",
+            (
+                f"- pred_specialist_ensemble: daily rank-percentile blend of {specialist_text}, "
+                f"weighted by trailing realized Top-1 success over the prior {lookback_text} out-of-sample dates."
+            ),
             "",
             "Interpretation",
             "- Scores are ranking signals, not calibrated probabilities.",
@@ -372,6 +383,7 @@ def run_pipeline(
     holdout_days: int,
     live_model: str,
     specialist_ensemble_models: list[str],
+    specialist_weight_lookback_days: int,
     output_dir: Path,
     log_fn: LogFn = None,
     progress_fn: ProgressFn = None,
@@ -412,7 +424,8 @@ def run_pipeline(
         f"(fit={fit_days}, test={test_days}, "
         f"step={step_days}, holdout_days={holdout_days}, "
         f"live_model={live_model}, live_decision_mode=top1, "
-        f"specialist_ensemble_members={','.join(specialist_ensemble_models)})"
+        f"specialist_ensemble_members={','.join(specialist_ensemble_models)}, "
+        f"specialist_weight_lookback_days={specialist_weight_lookback_days})"
     )
     set_progress(60)
     pred_df, window_diag_df = run_walkforward_model(
@@ -421,6 +434,7 @@ def run_pipeline(
         test_days=test_days,
         step_days=step_days,
         specialist_ensemble_models=specialist_ensemble_models,
+        specialist_weight_lookback_days=specialist_weight_lookback_days,
         log_fn=log,
     )
 
@@ -498,6 +512,7 @@ def run_pipeline(
                 "live_decision_mode": "top1",
                 "live_prediction_column": live_pred_col,
                 "specialist_ensemble_members": "|".join(specialist_ensemble_models),
+                "specialist_weight_lookback_days": specialist_weight_lookback_days,
                 "research_test_dates": int(research_pred_df["Date"].nunique()),
                 "holdout_test_dates": int(holdout_pred_df["Date"].nunique()),
             }
@@ -512,7 +527,7 @@ def run_pipeline(
     ensemble_benefit_df.to_csv(output_dir / "ensemble_benefit.csv", index=False)
     leaderboard_df.to_csv(output_dir / "performance_summary.csv", index=False)
     (output_dir / "diagnostics_guide.txt").write_text(
-        diagnostics_guide_text(specialist_ensemble_models),
+        diagnostics_guide_text(specialist_ensemble_models, specialist_weight_lookback_days),
         encoding="utf-8",
     )
     diagnostics_summary = build_diagnostics_summary(

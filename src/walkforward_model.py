@@ -256,8 +256,9 @@ def model_feature_subset_map(model_names: list[str]) -> dict[str, str]:
 def add_specialist_ensemble_scores(
     test_sub: pd.DataFrame,
     specialist_ensemble_models: list[str],
+    specialist_weight_lookback_days: int,
 ) -> pd.DataFrame:
-    """Build a Top-1 specialist ensemble from daily normalized specialist scores."""
+    """Build a dynamically weighted Top-1 specialist ensemble from daily normalized specialist scores."""
     if len(specialist_ensemble_models) < 2:
         raise ValueError("SPECIALIST_ENSEMBLE_MEMBERS must contain at least two model names")
     ensemble_models = [f"pred_{name}" for name in specialist_ensemble_models]
@@ -266,13 +267,64 @@ def add_specialist_ensemble_scores(
         raise ValueError(f"Missing specialist ensemble prediction columns: {missing}")
 
     test_sub = test_sub.copy()
-    ranked_cols = []
+    ranked_cols: dict[str, str] = {}
     for model_col in ensemble_models:
         ranked_col = f"{model_col}__rankpct"
-        ranked_cols.append(ranked_col)
+        ranked_cols[model_col] = ranked_col
         test_sub[ranked_col] = test_sub.groupby("Date")[model_col].rank(method="average", pct=True)
-    test_sub["pred_specialist_ensemble"] = test_sub[ranked_cols].mean(axis=1)
-    test_sub.drop(columns=ranked_cols, inplace=True)
+
+    date_order = sorted(test_sub["Date"].unique())
+    member_top1_returns: dict[str, list[float]] = {model_col: [] for model_col in ensemble_models}
+    member_weight_history: dict[str, list[float]] = {model_col: [] for model_col in ensemble_models}
+
+    for current_idx, current_date in enumerate(date_order):
+        history_start = max(0, current_idx - specialist_weight_lookback_days)
+        for model_col in ensemble_models:
+            history_slice = member_top1_returns[model_col][history_start:current_idx]
+            if history_slice:
+                avg_recent_return = float(np.mean(history_slice))
+                member_weight_history[model_col].append(max(avg_recent_return, 0.0))
+            else:
+                member_weight_history[model_col].append(np.nan)
+
+        raw_weights = np.array(
+            [member_weight_history[model_col][-1] for model_col in ensemble_models],
+            dtype=float,
+        )
+        if np.all(np.isnan(raw_weights)) or np.nansum(raw_weights) <= 0:
+            normalized_weights = np.full(len(ensemble_models), 1.0 / len(ensemble_models))
+        else:
+            normalized_weights = np.nan_to_num(raw_weights, nan=0.0)
+            normalized_weights = normalized_weights / normalized_weights.sum()
+
+        date_mask = test_sub["Date"] == current_date
+        weighted_score = np.zeros(int(date_mask.sum()), dtype=float)
+        for idx, model_col in enumerate(ensemble_models):
+            weighted_score += normalized_weights[idx] * test_sub.loc[date_mask, ranked_cols[model_col]].to_numpy()
+        test_sub.loc[date_mask, "pred_specialist_ensemble"] = weighted_score
+
+        date_slice = test_sub.loc[date_mask]
+        for model_col in ensemble_models:
+            chosen_row = date_slice.sort_values(model_col, ascending=False).iloc[0]
+            member_top1_returns[model_col].append(float(chosen_row["next_ret"]))
+
+    test_sub["pred_specialist_ensemble_weight_info"] = ""
+    for date_idx, current_date in enumerate(date_order):
+        weight_parts = []
+        raw_weights = np.array(
+            [member_weight_history[model_col][date_idx] for model_col in ensemble_models],
+            dtype=float,
+        )
+        if np.all(np.isnan(raw_weights)) or np.nansum(raw_weights) <= 0:
+            normalized_weights = np.full(len(ensemble_models), 1.0 / len(ensemble_models))
+        else:
+            normalized_weights = np.nan_to_num(raw_weights, nan=0.0)
+            normalized_weights = normalized_weights / normalized_weights.sum()
+        for idx, model_col in enumerate(ensemble_models):
+            weight_parts.append(f"{model_col}={normalized_weights[idx]:.3f}")
+        test_sub.loc[test_sub["Date"] == current_date, "pred_specialist_ensemble_weight_info"] = "|".join(weight_parts)
+
+    test_sub.drop(columns=list(ranked_cols.values()), inplace=True)
     return test_sub
 
 
@@ -282,6 +334,7 @@ def run_walkforward_model(
     test_days: int,
     step_days: int,
     specialist_ensemble_models: list[str],
+    specialist_weight_lookback_days: int,
     log_fn=None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run walk-forward classifiers and return predictions and window diagnostics."""
@@ -300,7 +353,7 @@ def run_walkforward_model(
     window_diagnostics = []
     window_splits = list(sliding_windows(all_dates, fit_days, test_days, step_days))
     prediction_cols = [f"pred_{name}" for name in models]
-    prediction_cols.extend(["pred_ensemble", "pred_specialist_ensemble"])
+    prediction_cols.append("pred_ensemble")
 
     for window_idx, (fit_dates, test_dates) in enumerate(window_splits, start=1):
         train_sub, _, y_train, _ = make_xy(long_df, fit_dates, feature_cols)
@@ -334,7 +387,6 @@ def run_walkforward_model(
             test_sub[f"pred_{model_name}"] * primary_weights[model_name]
             for model_name in primary_weights
         )
-        test_sub = add_specialist_ensemble_scores(test_sub, specialist_ensemble_models)
         log(
             "Primary diagnostic ensemble weights: "
             + ", ".join(f"{model_name}={primary_weights[model_name]:.3f}" for model_name in primary_weights)
@@ -342,7 +394,7 @@ def run_walkforward_model(
         log(
             "Specialist Top-1 ensemble: "
             + ", ".join(specialist_ensemble_models)
-            + " via daily rank averaging"
+            + f" via daily rank averaging with trailing lookback={specialist_weight_lookback_days}"
         )
 
         window_diagnostics.append(
@@ -369,5 +421,10 @@ def run_walkforward_model(
 
     pred_df = pd.concat(all_test_chunks, ignore_index=True)
     pred_df = pred_df.sort_values(["Date", "pair"]).reset_index(drop=True)
+    pred_df = add_specialist_ensemble_scores(
+        pred_df,
+        specialist_ensemble_models,
+        specialist_weight_lookback_days,
+    )
     window_diag_df = pd.DataFrame(window_diagnostics)
     return pred_df, window_diag_df

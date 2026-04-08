@@ -15,6 +15,7 @@ from src.config import (
     HOLDOUT_DAYS,
     LIVE_MODEL,
     SPECIALIST_ENSEMBLE_MEMBERS,
+    SPECIALIST_WEIGHT_LOOKBACK_DAYS,
     STEP_DAYS,
     TEST_DAYS,
     TRADING_DAYS_PER_YEAR,
@@ -120,6 +121,12 @@ def parse_args() -> argparse.Namespace:
         default=SPECIALIST_ENSEMBLE_MEMBERS,
         help="Model names to combine in the rank-based specialist ensemble.",
     )
+    parser.add_argument(
+        "--specialist-weight-lookback-days",
+        type=int,
+        default=SPECIALIST_WEIGHT_LOOKBACK_DAYS,
+        help="Trailing out-of-sample days used for dynamic specialist weights.",
+    )
     return parser.parse_args()
 
 
@@ -184,7 +191,7 @@ def main() -> None:
             print(f"  {message}")
 
         try:
-            stats_df, plot_path, _ = run_pipeline(
+            stats_df, plot_path, _, _ = run_pipeline(
                 csv_path=str(csv_path),
                 fit_days=params["fit_days"],
                 test_days=params["test_days"],
@@ -195,6 +202,7 @@ def main() -> None:
                 holdout_days=params["holdout_days"],
                 live_model=params["live_model"],
                 specialist_ensemble_models=args.specialist_ensemble_members,
+                specialist_weight_lookback_days=args.specialist_weight_lookback_days,
                 output_dir=run_dir,
                 log_fn=log,
             )
@@ -208,7 +216,7 @@ def main() -> None:
                 {
                     "run_name": run_name,
                     **params,
-                    "strategy": row["strategy"],
+                    "model": row["model"],
                     "Annualized Return": row["Annualized Return"],
                     "Annualized Vol": row["Annualized Vol"],
                     "Sharpe": row["Sharpe"],
@@ -230,8 +238,8 @@ def main() -> None:
 
     if not summary_df.empty:
         best_df = (
-            summary_df.sort_values(["strategy", "Sharpe"], ascending=[True, False])
-            .groupby("strategy", as_index=False)
+            summary_df.sort_values(["model", "Sharpe"], ascending=[True, False])
+            .groupby("model", as_index=False)
             .first()
         )
         best_df.to_csv(best_path, index=False)
