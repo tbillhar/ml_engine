@@ -17,10 +17,6 @@ PRIMARY_ENSEMBLE_WEIGHTS = {
     "logreg": 0.30,
     "rf": 0.15,
 }
-SPECIALIST_ENSEMBLE_MODELS = [
-    "lgbm_deep_returns_momentum",
-    "logreg_returns_momentum",
-]
 
 META_COLUMNS = ["Date", "pair", "next_ret", "future_ret", "rel", "profit_target", "ev_target"]
 
@@ -257,9 +253,14 @@ def model_feature_subset_map(model_names: list[str]) -> dict[str, str]:
     return mapping
 
 
-def add_specialist_ensemble_scores(test_sub: pd.DataFrame) -> pd.DataFrame:
+def add_specialist_ensemble_scores(
+    test_sub: pd.DataFrame,
+    specialist_ensemble_models: list[str],
+) -> pd.DataFrame:
     """Build a Top-1 specialist ensemble from daily normalized specialist scores."""
-    ensemble_models = [f"pred_{name}" for name in SPECIALIST_ENSEMBLE_MODELS]
+    if len(specialist_ensemble_models) < 2:
+        raise ValueError("SPECIALIST_ENSEMBLE_MEMBERS must contain at least two model names")
+    ensemble_models = [f"pred_{name}" for name in specialist_ensemble_models]
     missing = [col for col in ensemble_models if col not in test_sub.columns]
     if missing:
         raise ValueError(f"Missing specialist ensemble prediction columns: {missing}")
@@ -280,6 +281,7 @@ def run_walkforward_model(
     fit_days: int,
     test_days: int,
     step_days: int,
+    specialist_ensemble_models: list[str],
     log_fn=None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run walk-forward classifiers and return predictions and window diagnostics."""
@@ -332,14 +334,14 @@ def run_walkforward_model(
             test_sub[f"pred_{model_name}"] * primary_weights[model_name]
             for model_name in primary_weights
         )
-        test_sub = add_specialist_ensemble_scores(test_sub)
+        test_sub = add_specialist_ensemble_scores(test_sub, specialist_ensemble_models)
         log(
             "Primary diagnostic ensemble weights: "
             + ", ".join(f"{model_name}={primary_weights[model_name]:.3f}" for model_name in primary_weights)
         )
         log(
             "Specialist Top-1 ensemble: "
-            + ", ".join(SPECIALIST_ENSEMBLE_MODELS)
+            + ", ".join(specialist_ensemble_models)
             + " via daily rank averaging"
         )
 
@@ -358,7 +360,7 @@ def run_walkforward_model(
                 "model": "pred_specialist_ensemble",
                 "fit_dates": len(fit_dates),
                 "test_dates": len(test_dates),
-                "feature_subset": "rank_blend_lgbm_deep_returns_momentum_logreg_returns_momentum",
+                "feature_subset": "rank_blend_" + "_".join(specialist_ensemble_models),
             }
         )
 

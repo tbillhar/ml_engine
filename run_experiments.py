@@ -14,6 +14,7 @@ from src.config import (
     HORIZON,
     HOLDOUT_DAYS,
     LIVE_MODEL,
+    SPECIALIST_ENSEMBLE_MEMBERS,
     STEP_DAYS,
     TEST_DAYS,
     TRADING_DAYS_PER_YEAR,
@@ -113,6 +114,12 @@ def parse_args() -> argparse.Namespace:
         choices=["top1"],
         help="Top-1 only live decision mode.",
     )
+    parser.add_argument(
+        "--specialist-ensemble-members",
+        nargs="+",
+        default=SPECIALIST_ENSEMBLE_MEMBERS,
+        help="Model names to combine in the rank-based specialist ensemble.",
+    )
     return parser.parse_args()
 
 
@@ -187,6 +194,7 @@ def main() -> None:
                 trading_days_per_year=params["trading_days_per_year"],
                 holdout_days=params["holdout_days"],
                 live_model=params["live_model"],
+                specialist_ensemble_models=args.specialist_ensemble_members,
                 output_dir=run_dir,
                 log_fn=log,
             )

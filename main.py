@@ -7,6 +7,7 @@ from src.config import (
     HORIZON,
     HOLDOUT_DAYS,
     LIVE_MODEL,
+    SPECIALIST_ENSEMBLE_MEMBERS,
     STEP_DAYS,
     TEST_DAYS,
     TRADING_DAYS_PER_YEAR,
@@ -28,6 +29,7 @@ def main() -> None:
         trading_days_per_year=TRADING_DAYS_PER_YEAR,
         holdout_days=HOLDOUT_DAYS,
         live_model=LIVE_MODEL,
+        specialist_ensemble_models=SPECIALIST_ENSEMBLE_MEMBERS,
         output_dir=output_dir,
         log_fn=print,
     )

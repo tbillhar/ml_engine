@@ -8,6 +8,10 @@ TRANSACTION_LOSS_PCT = 0.025
 TRADING_DAYS_PER_YEAR = 260
 HOLDOUT_DAYS = 60
 LIVE_MODEL = "specialist_ensemble"
+SPECIALIST_ENSEMBLE_MEMBERS = [
+    "lgbm_deep_returns_momentum",
+    "logreg_returns_momentum",
+]
 RAW_DATA_FILENAME = "fx_raw_ohlc.csv"
 FEATURE_DATA_FILENAME = "fx_features_full.csv"
 YAHOO_DOWNLOAD_PERIOD = "1000d"

@@ -44,6 +44,7 @@ from src.config import (
     HOLDOUT_DAYS,
     LIVE_MODEL,
     RAW_DATA_FILENAME,
+    SPECIALIST_ENSEMBLE_MEMBERS,
     STEP_DAYS,
     TEST_DAYS,
     TRADING_DAYS_PER_YEAR,
@@ -59,7 +60,7 @@ class PipelineWorker(QObject):
 
     log = Signal(str)
     progress = Signal(int)
-    completed = Signal(object, str, str)
+    completed = Signal(object, str, str, str)
     failed = Signal(str)
 
     def __init__(
@@ -73,6 +74,7 @@ class PipelineWorker(QObject):
         trading_days_per_year: int,
         holdout_days: int,
         live_model: str,
+        specialist_ensemble_members: list[str],
         output_dir: Path,
     ) -> None:
         super().__init__()
@@ -85,11 +87,12 @@ class PipelineWorker(QObject):
         self.trading_days_per_year = trading_days_per_year
         self.holdout_days = holdout_days
         self.live_model = live_model
+        self.specialist_ensemble_members = specialist_ensemble_members
         self.output_dir = output_dir
 
     def run(self) -> None:
         try:
-            stats_df, plot_path, diagnostics_summary = run_pipeline(
+            stats_df, plot_path, heatmap_path, diagnostics_summary = run_pipeline(
                 csv_path=self.csv_path,
                 fit_days=self.fit_days,
                 test_days=self.test_days,
@@ -99,11 +102,12 @@ class PipelineWorker(QObject):
                 trading_days_per_year=self.trading_days_per_year,
                 holdout_days=self.holdout_days,
                 live_model=self.live_model,
+                specialist_ensemble_models=self.specialist_ensemble_members,
                 output_dir=self.output_dir,
                 log_fn=self.log.emit,
                 progress_fn=self.progress.emit,
             )
-            self.completed.emit(stats_df, str(plot_path), diagnostics_summary)
+            self.completed.emit(stats_df, str(plot_path), str(heatmap_path), diagnostics_summary)
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
 
@@ -188,6 +192,7 @@ class FXPipelineWindow(QMainWindow):
         self.transaction_loss_input = QLineEdit(str(TRANSACTION_LOSS_PCT))
         self.trading_days_input = QLineEdit(str(TRADING_DAYS_PER_YEAR))
         self.holdout_days_input = QLineEdit(str(HOLDOUT_DAYS))
+        self.specialist_members_input = QLineEdit(",".join(SPECIALIST_ENSEMBLE_MEMBERS))
         self.live_model_input = QComboBox()
         self.live_model_input.addItems(
             [
@@ -226,7 +231,7 @@ class FXPipelineWindow(QMainWindow):
         self.summary_table = QTableWidget(0, 5)
         self.summary_table.setHorizontalHeaderLabels(
             [
-                "Strategy",
+                "Model",
                 "Annualized Return",
                 "Annualized Volatility",
                 "Sharpe",
@@ -243,6 +248,8 @@ class FXPipelineWindow(QMainWindow):
 
         self.plot_label = QLabel("PnL plot will appear here after a run.")
         self.plot_label.setAlignment(Qt.AlignCenter)
+        self.heatmap_label = QLabel("Correlation heatmap will appear here after a run.")
+        self.heatmap_label.setAlignment(Qt.AlignCenter)
 
         top_controls = QHBoxLayout()
         top_controls.addWidget(select_csv_btn)
@@ -260,6 +267,7 @@ class FXPipelineWindow(QMainWindow):
         params_form.addRow("TRANSACTION_LOSS_PCT", self.transaction_loss_input)
         params_form.addRow("TRADING_DAYS_PER_YEAR", self.trading_days_input)
         params_form.addRow("HOLDOUT_DAYS", self.holdout_days_input)
+        params_form.addRow("SPECIALIST_ENSEMBLE_MEMBERS", self.specialist_members_input)
         params_form.addRow("LIVE_MODEL", self.live_model_input)
 
         action_row = QHBoxLayout()
@@ -290,6 +298,8 @@ class FXPipelineWindow(QMainWindow):
         right_layout.addWidget(self.diagnostics_guide, 1)
         right_layout.addWidget(QLabel("PnL Plot"))
         right_layout.addWidget(self.plot_label, 2)
+        right_layout.addWidget(QLabel("Correlation Heatmap"))
+        right_layout.addWidget(self.heatmap_label, 2)
 
         splitter = QSplitter()
         splitter.addWidget(left_panel)
@@ -420,6 +430,13 @@ class FXPipelineWindow(QMainWindow):
             )
             holdout_days = self._read_int(self.holdout_days_input, "HOLDOUT_DAYS")
             live_model = self.live_model_input.currentText().strip()
+            specialist_ensemble_members = [
+                item.strip()
+                for item in self.specialist_members_input.text().split(",")
+                if item.strip()
+            ]
+            if len(specialist_ensemble_members) < 2:
+                raise ValueError("SPECIALIST_ENSEMBLE_MEMBERS must contain at least two model names")
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Invalid Input", str(exc))
             return
@@ -431,6 +448,7 @@ class FXPipelineWindow(QMainWindow):
         self.status_label.setText("Status: Running...")
         self.logs.clear()
         self.diagnostics_summary.clear()
+        self.diagnostics_guide.setPlainText(diagnostics_guide_text(specialist_ensemble_members))
         self.append_log("Starting pipeline...")
 
         self.pipeline_thread = QThread()
@@ -444,6 +462,7 @@ class FXPipelineWindow(QMainWindow):
             trading_days_per_year=trading_days_per_year,
             holdout_days=holdout_days,
             live_model=live_model,
+            specialist_ensemble_members=specialist_ensemble_members,
             output_dir=self.output_dir,
         )
         self.pipeline_worker.moveToThread(self.pipeline_thread)
@@ -461,11 +480,18 @@ class FXPipelineWindow(QMainWindow):
 
         self.pipeline_thread.start()
 
-    def on_pipeline_completed(self, stats_df: pd.DataFrame, plot_path: str, diagnostics_summary: str) -> None:
+    def on_pipeline_completed(
+        self,
+        stats_df: pd.DataFrame,
+        plot_path: str,
+        heatmap_path: str,
+        diagnostics_summary: str,
+    ) -> None:
         self.status_label.setText("Status: Done")
         self.populate_summary_table(stats_df)
         self.diagnostics_summary.setPlainText(diagnostics_summary)
         self.load_plot(plot_path)
+        self.load_heatmap(heatmap_path)
         self.append_log("Pipeline completed successfully.")
 
     def on_pipeline_failed(self, error_msg: str) -> None:
@@ -504,7 +530,7 @@ class FXPipelineWindow(QMainWindow):
     def populate_summary_table(self, stats_df: pd.DataFrame) -> None:
         self.summary_table.setRowCount(len(stats_df))
         for i, row in stats_df.iterrows():
-            self.summary_table.setItem(i, 0, QTableWidgetItem(str(row["strategy"])))
+            self.summary_table.setItem(i, 0, QTableWidgetItem(str(row["model"])))
             self.summary_table.setItem(i, 1, QTableWidgetItem(f"{row['Annualized Return'] * 100:.1f}%"))
             self.summary_table.setItem(i, 2, QTableWidgetItem(f"{row['Annualized Vol'] * 100:.1f}%"))
             self.summary_table.setItem(i, 3, QTableWidgetItem(f"{row['Sharpe']:.6f}"))
@@ -523,11 +549,26 @@ class FXPipelineWindow(QMainWindow):
         )
         self.plot_label.setPixmap(scaled)
 
+    def load_heatmap(self, heatmap_path: str) -> None:
+        pixmap = QPixmap(heatmap_path)
+        if pixmap.isNull():
+            self.heatmap_label.setText("Failed to load model_correlation_heatmap.png")
+            return
+        scaled = pixmap.scaled(
+            self.heatmap_label.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+        self.heatmap_label.setPixmap(scaled)
+
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         current = self.output_dir / "pnl_curves.png"
         if current.exists() and self.plot_label.pixmap() is not None:
             self.load_plot(str(current))
+        heatmap = self.output_dir / "model_correlation_heatmap.png"
+        if heatmap.exists() and self.heatmap_label.pixmap() is not None:
+            self.load_heatmap(str(heatmap))
 
     def open_output_folder(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)

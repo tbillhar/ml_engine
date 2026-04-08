@@ -131,27 +131,31 @@ def build_ensemble_benefit(
     return pd.DataFrame(rows)
 
 
-def diagnostics_guide_text() -> str:
+def diagnostics_guide_text(specialist_ensemble_models: list[str] | None = None) -> str:
     """Return a concise guide to the main diagnostics and ensemble construction."""
+    specialist_text = (
+        ", ".join(specialist_ensemble_models)
+        if specialist_ensemble_models
+        else "configured specialist members"
+    )
     return "\n".join(
         [
             "Pipeline behavior",
             "- Trains all models on each walk-forward fit window.",
             "- Generates predictions for all models on every test/holdout date.",
             "- Evaluates all models diagnostically on the holdout slice.",
-            "- Uses only the selected LIVE_MODEL for the main GUI Performance Summary and PnL chart.",
+            "- Shows all model Top-1 holdout results in the main leaderboard and plots the top performers graphically.",
             "",
             "Key files",
-            "- performance_summary.csv: selected LIVE_MODEL only.",
-            "- top_selection_diagnostics.csv: holdout Top-1 results for every prediction column.",
-            "- model_diagnostics.csv: holdout score dispersion and Top-1 economics for every prediction column.",
-            "- score_bucket_diagnostics.csv: holdout score buckets versus realized outcomes.",
+            "- performance_summary.csv: holdout Top-1 leaderboard for all models plus Equal-weight.",
+            "- model_diagnostics.csv: score dispersion diagnostics plus Top-1 economics for all models.",
+            "- model_prediction_correlation.csv: holdout prediction correlation matrix.",
             "- ensemble_benefit.csv: Top-1 ensemble improvements versus the best single non-ensemble model.",
             "- diagnostics_summary.txt: concise holdout observations shown in the GUI.",
             "",
             "Ensembles",
             "- pred_ensemble: fixed-weight broad blend of lgbm_deep, logreg, and rf scores.",
-            "- pred_specialist_ensemble: equal-weight daily rank-percentile blend of lgbm_deep_returns_momentum and logreg_returns_momentum.",
+            f"- pred_specialist_ensemble: equal-weight daily rank-percentile blend of {specialist_text}.",
             "",
             "Interpretation",
             "- Scores are ranking signals, not calibrated probabilities.",
@@ -166,6 +170,37 @@ def selected_trade_rows(pred_df: pd.DataFrame, pred_col: str) -> pd.DataFrame:
     for _, grp in pred_df.groupby("Date", sort=True):
         selected_rows.append(grp.sort_values(pred_col, ascending=False).head(1))
     return pd.concat(selected_rows, ignore_index=True) if selected_rows else pred_df.iloc[0:0].copy()
+
+
+def build_model_top1_curves(
+    pred_df: pd.DataFrame,
+    model_cols: list[str],
+    transaction_loss_pct: float,
+    trading_days_per_year: int,
+) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
+    """Build Top-1 leaderboard rows and cumulative curves for all models."""
+    rows: list[dict[str, float | str]] = []
+    curves: dict[str, pd.DataFrame] = {}
+    for model_col in model_cols:
+        pnl_df = compute_top_k_pnl(
+            pred_df,
+            pred_col=model_col,
+            transaction_loss_pct=transaction_loss_pct,
+            k=1,
+        )
+        stats = perf_stats(pnl_df, trading_days_per_year=trading_days_per_year)
+        rows.append({"model": model_col, **stats})
+        curves[model_col] = cumulative_annualized_curve(pnl_df, trading_days_per_year=trading_days_per_year)
+
+    eq_df = compute_equal_weight_pnl(pred_df, transaction_loss_pct=transaction_loss_pct)
+    eq_stats = perf_stats(eq_df, trading_days_per_year=trading_days_per_year)
+    rows.append({"model": "Equal-weight", **eq_stats})
+    curves["Equal-weight"] = cumulative_annualized_curve(eq_df, trading_days_per_year=trading_days_per_year)
+    leaderboard_df = pd.DataFrame(rows).sort_values(
+        ["Sharpe", "Annualized Return"],
+        ascending=[False, False],
+    ).reset_index(drop=True)
+    return leaderboard_df, curves
 
 
 def build_top_selection_diagnostics(
@@ -198,6 +233,30 @@ def build_top_selection_diagnostics(
             }
         )
     return pd.DataFrame(rows)
+
+
+def build_correlation_heatmap(
+    correlation_df: pd.DataFrame,
+    output_path: Path,
+    ranked_models: list[str],
+    live_pred_col: str,
+) -> None:
+    """Save a readable heatmap for the leading model correlations."""
+    top_models = [model for model in ranked_models if model in correlation_df.index][:10]
+    if live_pred_col in correlation_df.index and live_pred_col not in top_models:
+        top_models = [live_pred_col, *top_models]
+    top_models = list(dict.fromkeys(top_models))
+    heatmap_df = correlation_df.loc[top_models, top_models]
+
+    plt.figure(figsize=(10, 8))
+    im = plt.imshow(heatmap_df.values, cmap="coolwarm", vmin=-1, vmax=1)
+    plt.colorbar(im, fraction=0.046, pad=0.04)
+    plt.xticks(range(len(top_models)), top_models, rotation=45, ha="right", fontsize=8)
+    plt.yticks(range(len(top_models)), top_models, fontsize=8)
+    plt.title("Holdout Prediction Correlation Heatmap")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close()
 
 
 def resolve_live_prediction_column(live_model: str) -> str:
@@ -261,13 +320,14 @@ def resolve_live_strategy_name(live_model_label: str) -> str:
 
 def build_diagnostics_summary(
     selected_strategy_name: str,
-    holdout_stats_df: pd.DataFrame,
+    leaderboard_df: pd.DataFrame,
     top_selection_df: pd.DataFrame,
     model_diagnostics_df: pd.DataFrame,
     correlation_df: pd.DataFrame,
+    live_pred_col: str,
 ) -> str:
     """Create a concise human-readable diagnostics summary for the GUI."""
-    selected_row = holdout_stats_df[holdout_stats_df["strategy"] == selected_strategy_name].iloc[0]
+    selected_row = leaderboard_df[leaderboard_df["model"] == live_pred_col].iloc[0]
     top1_df = top_selection_df[top_selection_df["selection"] == "top1"].sort_values(
         ["Sharpe", "Annualized Return"],
         ascending=[False, False],
@@ -311,10 +371,11 @@ def run_pipeline(
     trading_days_per_year: int,
     holdout_days: int,
     live_model: str,
+    specialist_ensemble_models: list[str],
     output_dir: Path,
     log_fn: LogFn = None,
     progress_fn: ProgressFn = None,
-) -> tuple[pd.DataFrame, Path, str]:
+) -> tuple[pd.DataFrame, Path, Path, str]:
     """Run the existing FX pipeline and save artifacts to output_dir."""
 
     def log(msg: str) -> None:
@@ -350,7 +411,8 @@ def run_pipeline(
         "Running walk-forward models "
         f"(fit={fit_days}, test={test_days}, "
         f"step={step_days}, holdout_days={holdout_days}, "
-        f"live_model={live_model}, live_decision_mode=top1)"
+        f"live_model={live_model}, live_decision_mode=top1, "
+        f"specialist_ensemble_members={','.join(specialist_ensemble_models)})"
     )
     set_progress(60)
     pred_df, window_diag_df = run_walkforward_model(
@@ -358,6 +420,7 @@ def run_pipeline(
         fit_days=fit_days,
         test_days=test_days,
         step_days=step_days,
+        specialist_ensemble_models=specialist_ensemble_models,
         log_fn=log,
     )
 
@@ -370,49 +433,29 @@ def run_pipeline(
 
     log("Computing daily mark-to-market strategy series")
     set_progress(75)
-    holdout_strategy_series, holdout_stats_df = strategy_frame(
+    strategy_frame(
         holdout_pred_df,
         pred_col=live_pred_col,
         transaction_loss_pct=transaction_loss_pct,
         trading_days_per_year=trading_days_per_year,
         live_model_label=live_model,
     )
-    research_strategy_series, research_stats_df = strategy_frame(
-        research_pred_df,
-        pred_col=live_pred_col,
-        transaction_loss_pct=transaction_loss_pct,
-        trading_days_per_year=trading_days_per_year,
-        live_model_label=live_model,
-    )
-    full_strategy_series, full_stats_df = strategy_frame(
-        pred_df,
-        pred_col=live_pred_col,
-        transaction_loss_pct=transaction_loss_pct,
-        trading_days_per_year=trading_days_per_year,
-        live_model_label=live_model,
-    )
     selected_strategy_name = resolve_live_strategy_name(live_model)
-    holdout_curves = {
-        name: cumulative_annualized_curve(series_df, trading_days_per_year=trading_days_per_year)
-        for name, series_df in holdout_strategy_series
-    }
 
     log("Computing model correlation and ensemble benefit diagnostics")
     eval_pred_df = holdout_pred_df
     model_cols = [col for col in eval_pred_df.columns if col.startswith("pred_")]
     correlation_df = eval_pred_df[model_cols].corr()
     spearman_correlation_df = eval_pred_df[model_cols].corr(method="spearman")
+    leaderboard_df, holdout_curves = build_model_top1_curves(
+        eval_pred_df,
+        model_cols=model_cols,
+        transaction_loss_pct=transaction_loss_pct,
+        trading_days_per_year=trading_days_per_year,
+    )
     diagnostic_rows = []
     for model_col in model_cols:
-        top1_stats = perf_stats(
-            compute_top_k_pnl(
-                eval_pred_df,
-                pred_col=model_col,
-                transaction_loss_pct=transaction_loss_pct,
-                k=1,
-            ),
-            trading_days_per_year=trading_days_per_year,
-        )
+        top1_stats = leaderboard_df[leaderboard_df["model"] == model_col].iloc[0]
         diagnostic_rows.append(
             {
                 "model": model_col,
@@ -429,7 +472,7 @@ def run_pipeline(
         ["Top-1 Sharpe", "Top-1 Annualized Return"],
         ascending=[False, False],
     )
-    bucket_diagnostics_df = build_score_bucket_diagnostics(eval_pred_df, model_cols)
+    _ = build_score_bucket_diagnostics(eval_pred_df, model_cols)
     top_selection_df = build_top_selection_diagnostics(
         eval_pred_df,
         model_cols=model_cols,
@@ -454,6 +497,7 @@ def run_pipeline(
                 "live_model": live_model,
                 "live_decision_mode": "top1",
                 "live_prediction_column": live_pred_col,
+                "specialist_ensemble_members": "|".join(specialist_ensemble_models),
                 "research_test_dates": int(research_pred_df["Date"].nunique()),
                 "holdout_test_dates": int(holdout_pred_df["Date"].nunique()),
             }
@@ -462,32 +506,24 @@ def run_pipeline(
 
     log("Saving CSV outputs")
     run_parameters_df.to_csv(output_dir / "run_parameters.csv", index=False)
-    pred_df.to_csv(output_dir / "predictions.csv", index=False)
-    holdout_pred_df.to_csv(output_dir / "predictions_holdout.csv", index=False)
-    research_pred_df.to_csv(output_dir / "predictions_research.csv", index=False)
-    window_diag_df.to_csv(output_dir / "window_model_diagnostics.csv", index=False)
     correlation_df.to_csv(output_dir / "model_prediction_correlation.csv")
     spearman_correlation_df.to_csv(output_dir / "model_prediction_rank_correlation.csv")
     model_diagnostics_df.to_csv(output_dir / "model_diagnostics.csv", index=False)
     ensemble_benefit_df.to_csv(output_dir / "ensemble_benefit.csv", index=False)
-    bucket_diagnostics_df.to_csv(output_dir / "score_bucket_diagnostics.csv", index=False)
-    top_selection_df.to_csv(output_dir / "top_selection_diagnostics.csv", index=False)
-    (output_dir / "diagnostics_guide.txt").write_text(diagnostics_guide_text(), encoding="utf-8")
+    leaderboard_df.to_csv(output_dir / "performance_summary.csv", index=False)
+    (output_dir / "diagnostics_guide.txt").write_text(
+        diagnostics_guide_text(specialist_ensemble_models),
+        encoding="utf-8",
+    )
     diagnostics_summary = build_diagnostics_summary(
         selected_strategy_name=selected_strategy_name,
-        holdout_stats_df=holdout_stats_df,
+        leaderboard_df=leaderboard_df,
         top_selection_df=top_selection_df,
         model_diagnostics_df=model_diagnostics_df,
         correlation_df=correlation_df,
+        live_pred_col=live_pred_col,
     )
     (output_dir / "diagnostics_summary.txt").write_text(diagnostics_summary, encoding="utf-8")
-
-    holdout_stats_df.to_csv(output_dir / "performance_summary.csv", index=False)
-    research_stats_df.to_csv(output_dir / "performance_summary_research.csv", index=False)
-    full_stats_df.to_csv(output_dir / "performance_summary_full.csv", index=False)
-    for strategy_name, strategy_df in holdout_strategy_series:
-        safe_name = strategy_name.lower().replace(" ", "_").replace("(", "").replace(")", "").replace("-", "_")
-        strategy_df.to_csv(output_dir / f"{safe_name}.csv", index=False)
     log(
         "Best holdout Top-1 selector: "
         f"{top_selection_df.sort_values(['Sharpe','Annualized Return'], ascending=[False, False]).iloc[0]['model']}"
@@ -500,20 +536,24 @@ def run_pipeline(
     log("Saving PnL plot")
     set_progress(90)
     plot_path = output_dir / "pnl_curves.png"
+    ranked_models = leaderboard_df[leaderboard_df["model"] != "Equal-weight"]["model"].tolist()
+    plotted_models = ranked_models[:6]
+    if live_pred_col not in plotted_models:
+        plotted_models = [live_pred_col, *plotted_models[:5]]
+    plotted_models = list(dict.fromkeys(plotted_models))
     plt.figure(figsize=(12, 6))
-    plotted_strategies = [f"{live_model} Top-1", "Equal-weight"]
-    for strategy_name in plotted_strategies:
-        curve_df = holdout_curves[strategy_name]
-        is_selected = strategy_name == selected_strategy_name
+    for model_name in [*plotted_models, "Equal-weight"]:
+        curve_df = holdout_curves[model_name]
+        is_selected = model_name == live_pred_col
         plt.plot(
             curve_df["Date"],
             curve_df["cum_ann"],
-            label=strategy_name,
-            linewidth=2.8 if is_selected else (1.8 if strategy_name == "Equal-weight" else 2.0),
-            linestyle="--" if strategy_name == "Equal-weight" else "-",
+            label=model_name,
+            linewidth=2.8 if is_selected else (1.8 if model_name == "Equal-weight" else 2.0),
+            linestyle="--" if model_name == "Equal-weight" else "-",
             alpha=1.0 if is_selected else 0.8,
         )
-    plt.title(f"Holdout Cumulative Annualized Return From {live_model} Decisions")
+    plt.title("Holdout Top-1 Cumulative Annualized Return")
     plt.xlabel("Date")
     plt.ylabel("Cumulative Annualized Return %")
     plt.gca().yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
@@ -523,6 +563,14 @@ def run_pipeline(
     plt.savefig(plot_path, dpi=150, bbox_inches="tight")
     plt.close()
 
+    heatmap_path = output_dir / "model_correlation_heatmap.png"
+    build_correlation_heatmap(
+        correlation_df=correlation_df,
+        output_path=heatmap_path,
+        ranked_models=ranked_models,
+        live_pred_col=live_pred_col,
+    )
+
     set_progress(100)
     log(f"Done. Outputs saved to: {output_dir.resolve()}")
-    return holdout_stats_df, plot_path, diagnostics_summary
+    return leaderboard_df, plot_path, heatmap_path, diagnostics_summary
