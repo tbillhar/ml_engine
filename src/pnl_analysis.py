@@ -65,17 +65,28 @@ def compute_top_k_pnl(
     pred_col: str,
     transaction_loss_pct: float = 0.0,
     k: int = 1,
+    rebalance_days: int = 1,
 ) -> pd.DataFrame:
-    """Daily PnL from selecting the top-k predictions each day."""
+    """Daily PnL from selecting the top-k predictions on a rebalance schedule."""
     rows = []
     transaction_loss = transaction_loss_pct / 100.0
     previous_weights: dict[str, float] = {}
-    for d, grp in df.groupby("Date", sort=True):
-        chosen = grp.sort_values(pred_col, ascending=False).head(k)
-        weight = 1.0 / len(chosen)
-        current_weights = {pair: weight for pair in chosen["pair"]}
-        gross_return = float(chosen["next_ret"].mean())
-        turnover = _portfolio_turnover(previous_weights, current_weights)
+    current_weights: dict[str, float] = {}
+    held_pairs: list[str] = []
+    held_avg_score = np.nan
+    for idx, (d, grp) in enumerate(df.groupby("Date", sort=True)):
+        should_rebalance = (idx % rebalance_days == 0) or not current_weights
+        if should_rebalance:
+            chosen = grp.sort_values(pred_col, ascending=False).head(k)
+            weight = 1.0 / len(chosen)
+            current_weights = {pair: weight for pair in chosen["pair"]}
+            held_pairs = list(chosen["pair"])
+            held_avg_score = float(chosen[pred_col].mean())
+        held_rows = grp.set_index("pair").reindex(held_pairs).dropna(subset=["next_ret"]).reset_index()
+        gross_return = float(
+            sum(current_weights.get(pair, 0.0) * next_ret for pair, next_ret in zip(held_rows["pair"], held_rows["next_ret"]))
+        )
+        turnover = _portfolio_turnover(previous_weights, current_weights) if should_rebalance else 0.0
         pnl = gross_return - (transaction_loss * turnover)
         rows.append(
             {
@@ -83,11 +94,11 @@ def compute_top_k_pnl(
                 "pnl": pnl,
                 "gross_return": gross_return,
                 "turnover": turnover,
-                "trade_count": int(len(chosen)),
-                "avg_selected_score": float(chosen[pred_col].mean()),
+                "trade_count": int(len(current_weights)),
+                "avg_selected_score": held_avg_score,
             }
         )
-        previous_weights = current_weights
+        previous_weights = current_weights.copy()
     return pd.DataFrame(rows).sort_values("Date")
 
 

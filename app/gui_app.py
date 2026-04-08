@@ -45,6 +45,7 @@ from src.config import (
     HORIZON,
     HOLDOUT_DAYS,
     LIVE_MODEL,
+    REBALANCE_DAYS,
     RAW_DATA_FILENAME,
     SPECIALIST_ENSEMBLE_MEMBERS,
     SPECIALIST_WEIGHT_LOOKBACK_DAYS,
@@ -72,6 +73,7 @@ class PipelineWorker(QObject):
         fit_days: int,
         test_days: int,
         step_days: int,
+        rebalance_days: int,
         horizon: int,
         transaction_loss_pct: float,
         trading_days_per_year: int,
@@ -86,6 +88,7 @@ class PipelineWorker(QObject):
         self.fit_days = fit_days
         self.test_days = test_days
         self.step_days = step_days
+        self.rebalance_days = rebalance_days
         self.horizon = horizon
         self.transaction_loss_pct = transaction_loss_pct
         self.trading_days_per_year = trading_days_per_year
@@ -102,6 +105,7 @@ class PipelineWorker(QObject):
                 fit_days=self.fit_days,
                 test_days=self.test_days,
                 step_days=self.step_days,
+                rebalance_days=self.rebalance_days,
                 horizon=self.horizon,
                 transaction_loss_pct=self.transaction_loss_pct,
                 trading_days_per_year=self.trading_days_per_year,
@@ -194,6 +198,7 @@ class FXPipelineWindow(QMainWindow):
         self.fit_input = QLineEdit(str(FIT_DAYS))
         self.test_input = QLineEdit(str(TEST_DAYS))
         self.step_input = QLineEdit(str(STEP_DAYS))
+        self.rebalance_input = QLineEdit(str(REBALANCE_DAYS))
         self.horizon_input = QLineEdit(str(HORIZON))
         self.transaction_loss_input = QLineEdit(str(TRANSACTION_LOSS_PCT))
         self.trading_days_input = QLineEdit(str(TRADING_DAYS_PER_YEAR))
@@ -258,7 +263,11 @@ class FXPipelineWindow(QMainWindow):
         self.diagnostics_guide.setReadOnly(True)
         self.diagnostics_guide.setMinimumHeight(180)
         self.diagnostics_guide.setPlainText(
-            diagnostics_guide_text(SPECIALIST_ENSEMBLE_MEMBERS, SPECIALIST_WEIGHT_LOOKBACK_DAYS)
+            diagnostics_guide_text(
+                SPECIALIST_ENSEMBLE_MEMBERS,
+                SPECIALIST_WEIGHT_LOOKBACK_DAYS,
+                REBALANCE_DAYS,
+            )
         )
 
         self.plot_label = QLabel("PnL plot will appear here after a run.")
@@ -282,6 +291,7 @@ class FXPipelineWindow(QMainWindow):
         params_form.addRow("FIT_DAYS", self.fit_input)
         params_form.addRow("TEST_DAYS", self.test_input)
         params_form.addRow("STEP_DAYS", self.step_input)
+        params_form.addRow("REBALANCE_DAYS", self.rebalance_input)
         params_form.addRow("HORIZON", self.horizon_input)
         params_form.addRow("TRANSACTION_LOSS_PCT", self.transaction_loss_input)
         params_form.addRow("TRADING_DAYS_PER_YEAR", self.trading_days_input)
@@ -458,6 +468,7 @@ class FXPipelineWindow(QMainWindow):
             fit_days = self._read_int(self.fit_input, "FIT_DAYS")
             test_days = self._read_int(self.test_input, "TEST_DAYS")
             step_days = self._read_int(self.step_input, "STEP_DAYS")
+            rebalance_days = self._read_int(self.rebalance_input, "REBALANCE_DAYS")
             horizon = self._read_int(self.horizon_input, "HORIZON")
             transaction_loss_pct = self._read_nonnegative_float(
                 self.transaction_loss_input,
@@ -492,7 +503,11 @@ class FXPipelineWindow(QMainWindow):
         self.logs.clear()
         self.diagnostics_summary.clear()
         self.diagnostics_guide.setPlainText(
-            diagnostics_guide_text(specialist_ensemble_members, specialist_weight_lookback_days)
+            diagnostics_guide_text(
+                specialist_ensemble_members,
+                specialist_weight_lookback_days,
+                rebalance_days,
+            )
         )
         self.append_log("Starting pipeline...")
 
@@ -502,6 +517,7 @@ class FXPipelineWindow(QMainWindow):
             fit_days=fit_days,
             test_days=test_days,
             step_days=step_days,
+            rebalance_days=rebalance_days,
             horizon=horizon,
             transaction_loss_pct=transaction_loss_pct,
             trading_days_per_year=trading_days_per_year,

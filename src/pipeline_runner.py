@@ -143,6 +143,7 @@ def build_ensemble_benefit(
 def diagnostics_guide_text(
     specialist_ensemble_models: list[str] | None = None,
     specialist_weight_lookback_days: int | None = None,
+    rebalance_days: int | None = None,
 ) -> str:
     """Return a concise guide to the main diagnostics and ensemble construction."""
     specialist_text = (
@@ -155,6 +156,7 @@ def diagnostics_guide_text(
         if specialist_weight_lookback_days is not None
         else "configured lookback"
     )
+    rebalance_text = str(rebalance_days) if rebalance_days is not None else "configured rebalance"
     return "\n".join(
         [
             "Pipeline behavior",
@@ -177,6 +179,7 @@ def diagnostics_guide_text(
                 f"- pred_specialist_ensemble: daily rank-percentile blend of {specialist_text}, "
                 f"weighted by trailing realized Top-1 success over the prior {lookback_text} out-of-sample dates."
             ),
+            f"- Rebalancing: Top-1 strategies rebalance every {rebalance_text} day(s).",
             "",
             "Interpretation",
             "- Scores are ranking signals, not calibrated probabilities.",
@@ -185,10 +188,12 @@ def diagnostics_guide_text(
     )
 
 
-def selected_trade_rows(pred_df: pd.DataFrame, pred_col: str) -> pd.DataFrame:
-    """Return the Top-1 rows selected by a daily ranking rule."""
+def selected_trade_rows(pred_df: pd.DataFrame, pred_col: str, rebalance_days: int) -> pd.DataFrame:
+    """Return the Top-1 rows selected on the configured rebalance schedule."""
     selected_rows = []
-    for _, grp in pred_df.groupby("Date", sort=True):
+    for idx, (_, grp) in enumerate(pred_df.groupby("Date", sort=True)):
+        if idx % rebalance_days != 0:
+            continue
         selected_rows.append(grp.sort_values(pred_col, ascending=False).head(1))
     return pd.concat(selected_rows, ignore_index=True) if selected_rows else pred_df.iloc[0:0].copy()
 
@@ -198,6 +203,7 @@ def build_model_top1_curves(
     model_cols: list[str],
     transaction_loss_pct: float,
     trading_days_per_year: int,
+    rebalance_days: int,
 ) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
     """Build Top-1 leaderboard rows and cumulative curves for all models."""
     rows: list[dict[str, float | str]] = []
@@ -208,6 +214,7 @@ def build_model_top1_curves(
             pred_col=model_col,
             transaction_loss_pct=transaction_loss_pct,
             k=1,
+            rebalance_days=rebalance_days,
         )
         stats = perf_stats(pnl_df, trading_days_per_year=trading_days_per_year)
         rows.append({"model": model_col, **stats})
@@ -229,6 +236,7 @@ def build_top_selection_diagnostics(
     model_cols: list[str],
     transaction_loss_pct: float,
     trading_days_per_year: int,
+    rebalance_days: int,
 ) -> pd.DataFrame:
     """Compare models as Top-1 selectors on the evaluation slice."""
     rows: list[dict[str, float | str]] = []
@@ -238,9 +246,10 @@ def build_top_selection_diagnostics(
             pred_col=model_col,
             transaction_loss_pct=transaction_loss_pct,
             k=1,
+            rebalance_days=rebalance_days,
         )
         stats = perf_stats(pnl_df, trading_days_per_year=trading_days_per_year)
-        selected_df = selected_trade_rows(pred_df, pred_col=model_col)
+        selected_df = selected_trade_rows(pred_df, pred_col=model_col, rebalance_days=rebalance_days)
         realized_win_rate = float(selected_df["profit_target"].mean()) if not selected_df.empty else np.nan
         avg_selected_next_ret = float(selected_df["next_ret"].mean()) if not selected_df.empty else np.nan
         rows.append(
@@ -333,6 +342,7 @@ def strategy_frame(
     transaction_loss_pct: float,
     trading_days_per_year: int,
     live_model_label: str,
+    rebalance_days: int,
 ) -> tuple[list[tuple[str, pd.DataFrame]], pd.DataFrame]:
     """Build Top-1 strategy and benchmark PnL frames for a chosen live prediction column."""
     strategy_series = [
@@ -343,6 +353,7 @@ def strategy_frame(
                 pred_col=pred_col,
                 transaction_loss_pct=transaction_loss_pct,
                 k=1,
+                rebalance_days=rebalance_days,
             ),
         ),
         (
@@ -412,6 +423,7 @@ def run_pipeline(
     fit_days: int,
     test_days: int,
     step_days: int,
+    rebalance_days: int,
     horizon: int,
     transaction_loss_pct: float,
     trading_days_per_year: int,
@@ -457,7 +469,7 @@ def run_pipeline(
     log(
         "Running walk-forward models "
         f"(fit={fit_days}, test={test_days}, "
-        f"step={step_days}, holdout_days={holdout_days}, "
+        f"step={step_days}, rebalance_days={rebalance_days}, holdout_days={holdout_days}, "
         f"live_model={live_model}, live_decision_mode=top1, "
         f"specialist_ensemble_members={','.join(specialist_ensemble_models)}, "
         f"specialist_weight_lookback_days={specialist_weight_lookback_days})"
@@ -488,6 +500,7 @@ def run_pipeline(
         transaction_loss_pct=transaction_loss_pct,
         trading_days_per_year=trading_days_per_year,
         live_model_label=live_model,
+        rebalance_days=rebalance_days,
     )
     selected_strategy_name = resolve_live_strategy_name(live_model)
 
@@ -502,6 +515,7 @@ def run_pipeline(
         model_cols=model_cols,
         transaction_loss_pct=transaction_loss_pct,
         trading_days_per_year=trading_days_per_year,
+        rebalance_days=rebalance_days,
     )
     diagnostic_rows = []
     for model_col in model_cols:
@@ -528,6 +542,7 @@ def run_pipeline(
         model_cols=model_cols,
         transaction_loss_pct=transaction_loss_pct,
         trading_days_per_year=trading_days_per_year,
+        rebalance_days=rebalance_days,
     )
     ensemble_benefit_df = build_ensemble_benefit(
         top_selection_df,
@@ -540,6 +555,7 @@ def run_pipeline(
                 "fit_days": fit_days,
                 "test_days": test_days,
                 "step_days": step_days,
+                "rebalance_days": rebalance_days,
                 "horizon": horizon,
                 "transaction_loss_pct": transaction_loss_pct,
                 "trading_days_per_year": trading_days_per_year,
@@ -564,7 +580,11 @@ def run_pipeline(
     ensemble_benefit_df.to_csv(output_dir / "ensemble_benefit.csv", index=False)
     leaderboard_df.to_csv(output_dir / "performance_summary.csv", index=False)
     (output_dir / "diagnostics_guide.txt").write_text(
-        diagnostics_guide_text(specialist_ensemble_models, specialist_weight_lookback_days),
+        diagnostics_guide_text(
+            specialist_ensemble_models,
+            specialist_weight_lookback_days,
+            rebalance_days,
+        ),
         encoding="utf-8",
     )
     diagnostics_summary = build_diagnostics_summary(

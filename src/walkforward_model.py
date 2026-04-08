@@ -258,7 +258,7 @@ def add_specialist_ensemble_scores(
     specialist_ensemble_models: list[str],
     specialist_weight_lookback_days: int,
 ) -> pd.DataFrame:
-    """Build a dynamically weighted Top-1 specialist ensemble from daily normalized specialist scores."""
+    """Build a softened dynamically weighted Top-1 specialist ensemble."""
     if len(specialist_ensemble_models) < 2:
         raise ValueError("SPECIALIST_ENSEMBLE_MEMBERS must contain at least two model names")
     ensemble_models = [f"pred_{name}" for name in specialist_ensemble_models]
@@ -276,6 +276,24 @@ def add_specialist_ensemble_scores(
     date_order = sorted(test_sub["Date"].unique())
     member_top1_returns: dict[str, list[float]] = {model_col: [] for model_col in ensemble_models}
     member_weight_history: dict[str, list[float]] = {model_col: [] for model_col in ensemble_models}
+    equal_weight = 1.0 / len(ensemble_models)
+
+    def softmax(values: np.ndarray) -> np.ndarray:
+        shifted = values - np.max(values)
+        exps = np.exp(shifted)
+        return exps / exps.sum()
+
+    def softened_weights(raw_scores: np.ndarray) -> np.ndarray:
+        if np.all(np.isnan(raw_scores)):
+            return np.full(len(ensemble_models), equal_weight)
+        filled = np.nan_to_num(raw_scores, nan=0.0)
+        centered = filled - filled.mean()
+        scale = max(float(np.std(centered)), 1e-4)
+        dynamic = softmax(centered / scale)
+        blended = 0.5 * dynamic + 0.5 * np.full(len(ensemble_models), equal_weight)
+        max_weight = min(0.70, 2.0 * equal_weight)
+        clipped = np.clip(blended, 1e-9, max_weight)
+        return clipped / clipped.sum()
 
     for current_idx, current_date in enumerate(date_order):
         history_start = max(0, current_idx - specialist_weight_lookback_days)
@@ -283,7 +301,7 @@ def add_specialist_ensemble_scores(
             history_slice = member_top1_returns[model_col][history_start:current_idx]
             if history_slice:
                 avg_recent_return = float(np.mean(history_slice))
-                member_weight_history[model_col].append(max(avg_recent_return, 0.0))
+                member_weight_history[model_col].append(avg_recent_return)
             else:
                 member_weight_history[model_col].append(np.nan)
 
@@ -291,11 +309,7 @@ def add_specialist_ensemble_scores(
             [member_weight_history[model_col][-1] for model_col in ensemble_models],
             dtype=float,
         )
-        if np.all(np.isnan(raw_weights)) or np.nansum(raw_weights) <= 0:
-            normalized_weights = np.full(len(ensemble_models), 1.0 / len(ensemble_models))
-        else:
-            normalized_weights = np.nan_to_num(raw_weights, nan=0.0)
-            normalized_weights = normalized_weights / normalized_weights.sum()
+        normalized_weights = softened_weights(raw_weights)
 
         date_mask = test_sub["Date"] == current_date
         weighted_score = np.zeros(int(date_mask.sum()), dtype=float)
@@ -306,7 +320,7 @@ def add_specialist_ensemble_scores(
         date_slice = test_sub.loc[date_mask]
         for model_col in ensemble_models:
             chosen_row = date_slice.sort_values(model_col, ascending=False).iloc[0]
-            member_top1_returns[model_col].append(float(chosen_row["next_ret"]))
+            member_top1_returns[model_col].append(float(chosen_row["ev_target"]))
 
     test_sub["specialist_ensemble_weight_info"] = ""
     for date_idx, current_date in enumerate(date_order):
@@ -315,11 +329,7 @@ def add_specialist_ensemble_scores(
             [member_weight_history[model_col][date_idx] for model_col in ensemble_models],
             dtype=float,
         )
-        if np.all(np.isnan(raw_weights)) or np.nansum(raw_weights) <= 0:
-            normalized_weights = np.full(len(ensemble_models), 1.0 / len(ensemble_models))
-        else:
-            normalized_weights = np.nan_to_num(raw_weights, nan=0.0)
-            normalized_weights = normalized_weights / normalized_weights.sum()
+        normalized_weights = softened_weights(raw_weights)
         for idx, model_col in enumerate(ensemble_models):
             weight_parts.append(f"{model_col}={normalized_weights[idx]:.3f}")
         test_sub.loc[test_sub["Date"] == current_date, "specialist_ensemble_weight_info"] = "|".join(weight_parts)

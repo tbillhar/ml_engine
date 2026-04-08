@@ -14,6 +14,7 @@ from src.config import (
     HORIZON,
     HOLDOUT_DAYS,
     LIVE_MODEL,
+    REBALANCE_DAYS,
     SPECIALIST_ENSEMBLE_MEMBERS,
     SPECIALIST_WEIGHT_LOOKBACK_DAYS,
     STEP_DAYS,
@@ -58,6 +59,13 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=[STEP_DAYS],
         help="One or more STEP_DAYS values.",
+    )
+    parser.add_argument(
+        "--rebalance-days",
+        nargs="+",
+        type=int,
+        default=[REBALANCE_DAYS],
+        help="One or more REBALANCE_DAYS values.",
     )
     parser.add_argument(
         "--horizon",
@@ -135,6 +143,7 @@ def format_run_name(params: dict[str, int | float]) -> str:
         f"fit{params['fit_days']}_"
         f"test{params['test_days']}_"
         f"step{params['step_days']}_"
+        f"reb{params['rebalance_days']}_"
         f"h{params['horizon']}_"
         f"cost{params['transaction_loss_pct']}_"
         f"tdpy{params['trading_days_per_year']}_"
@@ -158,6 +167,7 @@ def main() -> None:
             args.fit_days,
             args.test_days,
             args.step_days,
+            args.rebalance_days,
             args.horizon,
             args.transaction_loss_pct,
             args.trading_days_per_year,
@@ -176,12 +186,13 @@ def main() -> None:
             "fit_days": combo[0],
             "test_days": combo[1],
             "step_days": combo[2],
-            "horizon": combo[3],
-            "transaction_loss_pct": combo[4],
-            "trading_days_per_year": combo[5],
-            "holdout_days": combo[6],
-            "live_model": combo[7],
-            "live_decision_mode": combo[8],
+            "rebalance_days": combo[3],
+            "horizon": combo[4],
+            "transaction_loss_pct": combo[5],
+            "trading_days_per_year": combo[6],
+            "holdout_days": combo[7],
+            "live_model": combo[8],
+            "live_decision_mode": combo[9],
         }
         run_name = format_run_name(params)
         run_dir = results_dir / run_name
@@ -196,6 +207,7 @@ def main() -> None:
                 fit_days=params["fit_days"],
                 test_days=params["test_days"],
                 step_days=params["step_days"],
+                rebalance_days=params["rebalance_days"],
                 horizon=params["horizon"],
                 transaction_loss_pct=params["transaction_loss_pct"],
                 trading_days_per_year=params["trading_days_per_year"],
