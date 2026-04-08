@@ -25,9 +25,11 @@ from PySide6.QtWidgets import (
     QPushButton,
     QPlainTextEdit,
     QProgressBar,
+    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QHeaderView,
     QVBoxLayout,
     QWidget,
 )
@@ -165,7 +167,7 @@ class FXPipelineWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("FX ML Pipeline")
-        self.resize(1000, 700)
+        self.resize(1500, 920)
 
         self.output_dir = ROOT_DIR / "outputs"
         self.raw_data_path = ROOT_DIR / "data" / RAW_DATA_FILENAME
@@ -243,20 +245,30 @@ class FXPipelineWindow(QMainWindow):
                 "Cumulative Return",
             ]
         )
+        self.summary_table.setAlternatingRowColors(True)
+        self.summary_table.setSortingEnabled(True)
+        self.summary_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.summary_table.verticalHeader().setVisible(False)
 
         self.diagnostics_summary = QPlainTextEdit()
         self.diagnostics_summary.setReadOnly(True)
         self.diagnostics_summary.setPlaceholderText("Key observations from diagnostics will appear here after a run.")
+        self.diagnostics_summary.setMinimumHeight(140)
         self.diagnostics_guide = QPlainTextEdit()
         self.diagnostics_guide.setReadOnly(True)
+        self.diagnostics_guide.setMinimumHeight(180)
         self.diagnostics_guide.setPlainText(
             diagnostics_guide_text(SPECIALIST_ENSEMBLE_MEMBERS, SPECIALIST_WEIGHT_LOOKBACK_DAYS)
         )
 
         self.plot_label = QLabel("PnL plot will appear here after a run.")
         self.plot_label.setAlignment(Qt.AlignCenter)
+        self.plot_label.setMinimumHeight(320)
+        self.plot_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.heatmap_label = QLabel("Correlation heatmap will appear here after a run.")
         self.heatmap_label.setAlignment(Qt.AlignCenter)
+        self.heatmap_label.setMinimumHeight(320)
+        self.heatmap_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         top_controls = QHBoxLayout()
         top_controls.addWidget(select_csv_btn)
@@ -296,23 +308,42 @@ class FXPipelineWindow(QMainWindow):
         left_layout.addWidget(QLabel("Logs"))
         left_layout.addWidget(self.logs, 1)
 
+        summary_panel = QWidget()
+        summary_layout = QVBoxLayout(summary_panel)
+        summary_layout.setContentsMargins(0, 0, 0, 0)
+        summary_layout.addWidget(QLabel("Performance Summary"))
+        summary_layout.addWidget(self.summary_table, 3)
+        summary_layout.addWidget(QLabel("Key Observations"))
+        summary_layout.addWidget(self.diagnostics_summary, 1)
+        summary_layout.addWidget(QLabel("Diagnostics Guide"))
+        summary_layout.addWidget(self.diagnostics_guide, 1)
+
+        charts_panel = QWidget()
+        charts_layout = QVBoxLayout(charts_panel)
+        charts_layout.setContentsMargins(0, 0, 0, 0)
+        charts_layout.addWidget(QLabel("PnL Plot"))
+        charts_layout.addWidget(self.plot_label, 1)
+        charts_layout.addWidget(QLabel("Correlation Heatmap"))
+        charts_layout.addWidget(self.heatmap_label, 1)
+
+        right_splitter = QSplitter(Qt.Vertical)
+        right_splitter.addWidget(summary_panel)
+        right_splitter.addWidget(charts_panel)
+        right_splitter.setStretchFactor(0, 3)
+        right_splitter.setStretchFactor(1, 4)
+        right_splitter.setSizes([360, 520])
+
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
-        right_layout.addWidget(QLabel("Performance Summary"))
-        right_layout.addWidget(self.summary_table, 1)
-        right_layout.addWidget(QLabel("Key Observations"))
-        right_layout.addWidget(self.diagnostics_summary, 1)
-        right_layout.addWidget(QLabel("Diagnostics Guide"))
-        right_layout.addWidget(self.diagnostics_guide, 1)
-        right_layout.addWidget(QLabel("PnL Plot"))
-        right_layout.addWidget(self.plot_label, 2)
-        right_layout.addWidget(QLabel("Correlation Heatmap"))
-        right_layout.addWidget(self.heatmap_label, 2)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.addWidget(right_splitter)
 
         splitter = QSplitter()
         splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)
-        splitter.setSizes([420, 580])
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 3)
+        splitter.setSizes([320, 1180])
 
         container = QWidget()
         container_layout = QVBoxLayout(container)
@@ -550,7 +581,7 @@ class FXPipelineWindow(QMainWindow):
             self.summary_table.setItem(i, 2, QTableWidgetItem(f"{row['Annualized Vol'] * 100:.1f}%"))
             self.summary_table.setItem(i, 3, QTableWidgetItem(f"{row['Sharpe']:.6f}"))
             self.summary_table.setItem(i, 4, QTableWidgetItem(f"{row['Cumulative Return'] * 100:.1f}%"))
-        self.summary_table.resizeColumnsToContents()
+        self.summary_table.sortItems(3, Qt.DescendingOrder)
 
     def load_plot(self, plot_path: str) -> None:
         pixmap = QPixmap(plot_path)

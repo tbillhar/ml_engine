@@ -40,6 +40,15 @@ LIVE_MODEL_COLUMNS = {
 }
 
 
+def numeric_prediction_columns(df: pd.DataFrame) -> list[str]:
+    """Return numeric prediction columns only, excluding metadata fields."""
+    return [
+        col
+        for col in df.columns
+        if col.startswith("pred_") and pd.api.types.is_numeric_dtype(df[col])
+    ]
+
+
 def build_score_bucket_diagnostics(pred_df: pd.DataFrame, model_cols: list[str]) -> pd.DataFrame:
     """Summarize score buckets and realized outcomes by model."""
     rows: list[dict[str, float | int | str]] = []
@@ -158,6 +167,7 @@ def diagnostics_guide_text(
             "- performance_summary.csv: holdout Top-1 leaderboard for all models plus Equal-weight.",
             "- model_diagnostics.csv: score dispersion diagnostics plus Top-1 economics for all models.",
             "- model_prediction_correlation.csv: holdout prediction correlation matrix.",
+            "- top1_pick_overlap.csv: fraction of holdout dates where each pair of models picked the same Top-1 pair.",
             "- ensemble_benefit.csv: Top-1 ensemble improvements versus the best single non-ensemble model.",
             "- diagnostics_summary.txt: concise holdout observations shown in the GUI.",
             "",
@@ -244,6 +254,31 @@ def build_top_selection_diagnostics(
             }
         )
     return pd.DataFrame(rows)
+
+
+def build_top1_pick_overlap(pred_df: pd.DataFrame, model_cols: list[str]) -> pd.DataFrame:
+    """Compute pairwise same-pick rates for daily Top-1 selections."""
+    top1_picks: dict[str, pd.Series] = {}
+    for model_col in model_cols:
+        picks = (
+            pred_df.sort_values(["Date", model_col], ascending=[True, False])
+            .groupby("Date", sort=True)
+            .head(1)[["Date", "pair"]]
+            .set_index("Date")["pair"]
+        )
+        top1_picks[model_col] = picks
+
+    overlap_df = pd.DataFrame(index=model_cols, columns=model_cols, dtype=float)
+    for left_model in model_cols:
+        for right_model in model_cols:
+            aligned = pd.concat(
+                [top1_picks[left_model], top1_picks[right_model]],
+                axis=1,
+                keys=["left", "right"],
+            ).dropna()
+            overlap = float((aligned["left"] == aligned["right"]).mean()) if not aligned.empty else np.nan
+            overlap_df.loc[left_model, right_model] = overlap
+    return overlap_df
 
 
 def build_correlation_heatmap(
@@ -458,9 +493,10 @@ def run_pipeline(
 
     log("Computing model correlation and ensemble benefit diagnostics")
     eval_pred_df = holdout_pred_df
-    model_cols = [col for col in eval_pred_df.columns if col.startswith("pred_")]
+    model_cols = numeric_prediction_columns(eval_pred_df)
     correlation_df = eval_pred_df[model_cols].corr()
     spearman_correlation_df = eval_pred_df[model_cols].corr(method="spearman")
+    top1_overlap_df = build_top1_pick_overlap(eval_pred_df, model_cols=model_cols)
     leaderboard_df, holdout_curves = build_model_top1_curves(
         eval_pred_df,
         model_cols=model_cols,
@@ -523,6 +559,7 @@ def run_pipeline(
     run_parameters_df.to_csv(output_dir / "run_parameters.csv", index=False)
     correlation_df.to_csv(output_dir / "model_prediction_correlation.csv")
     spearman_correlation_df.to_csv(output_dir / "model_prediction_rank_correlation.csv")
+    top1_overlap_df.to_csv(output_dir / "top1_pick_overlap.csv")
     model_diagnostics_df.to_csv(output_dir / "model_diagnostics.csv", index=False)
     ensemble_benefit_df.to_csv(output_dir / "ensemble_benefit.csv", index=False)
     leaderboard_df.to_csv(output_dir / "performance_summary.csv", index=False)
@@ -546,6 +583,10 @@ def run_pipeline(
     log(
         "Average pairwise prediction correlation: "
         f"{correlation_df.where(~np.eye(len(correlation_df), dtype=bool)).stack().mean():.4f}"
+    )
+    log(
+        "Average Top-1 pick overlap: "
+        f"{top1_overlap_df.where(~np.eye(len(top1_overlap_df), dtype=bool)).stack().mean():.4f}"
     )
 
     log("Saving PnL plot")
@@ -572,6 +613,7 @@ def run_pipeline(
     plt.xlabel("Date")
     plt.ylabel("Cumulative Annualized Return %")
     plt.gca().yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
+    plt.ylim(-0.5, 0.5)
     plt.grid(alpha=0.3)
     plt.legend()
     plt.tight_layout()

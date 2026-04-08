@@ -308,7 +308,7 @@ def add_specialist_ensemble_scores(
             chosen_row = date_slice.sort_values(model_col, ascending=False).iloc[0]
             member_top1_returns[model_col].append(float(chosen_row["next_ret"]))
 
-    test_sub["pred_specialist_ensemble_weight_info"] = ""
+    test_sub["specialist_ensemble_weight_info"] = ""
     for date_idx, current_date in enumerate(date_order):
         weight_parts = []
         raw_weights = np.array(
@@ -322,7 +322,7 @@ def add_specialist_ensemble_scores(
             normalized_weights = normalized_weights / normalized_weights.sum()
         for idx, model_col in enumerate(ensemble_models):
             weight_parts.append(f"{model_col}={normalized_weights[idx]:.3f}")
-        test_sub.loc[test_sub["Date"] == current_date, "pred_specialist_ensemble_weight_info"] = "|".join(weight_parts)
+        test_sub.loc[test_sub["Date"] == current_date, "specialist_ensemble_weight_info"] = "|".join(weight_parts)
 
     test_sub.drop(columns=list(ranked_cols.values()), inplace=True)
     return test_sub
