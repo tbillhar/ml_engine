@@ -42,9 +42,7 @@ from src.config import (
     FIT_DAYS,
     HORIZON,
     HOLDOUT_DAYS,
-    LIVE_DECISION_MODE,
     LIVE_MODEL,
-    P_WIN_THRESHOLD,
     RAW_DATA_FILENAME,
     STEP_DAYS,
     TEST_DAYS,
@@ -73,10 +71,8 @@ class PipelineWorker(QObject):
         horizon: int,
         transaction_loss_pct: float,
         trading_days_per_year: int,
-        p_win_threshold: float,
         holdout_days: int,
         live_model: str,
-        live_decision_mode: str,
         output_dir: Path,
     ) -> None:
         super().__init__()
@@ -87,10 +83,8 @@ class PipelineWorker(QObject):
         self.horizon = horizon
         self.transaction_loss_pct = transaction_loss_pct
         self.trading_days_per_year = trading_days_per_year
-        self.p_win_threshold = p_win_threshold
         self.holdout_days = holdout_days
         self.live_model = live_model
-        self.live_decision_mode = live_decision_mode
         self.output_dir = output_dir
 
     def run(self) -> None:
@@ -103,10 +97,8 @@ class PipelineWorker(QObject):
                 horizon=self.horizon,
                 transaction_loss_pct=self.transaction_loss_pct,
                 trading_days_per_year=self.trading_days_per_year,
-                p_win_threshold=self.p_win_threshold,
                 holdout_days=self.holdout_days,
                 live_model=self.live_model,
-                live_decision_mode=self.live_decision_mode,
                 output_dir=self.output_dir,
                 log_fn=self.log.emit,
                 progress_fn=self.progress.emit,
@@ -195,7 +187,6 @@ class FXPipelineWindow(QMainWindow):
         self.horizon_input = QLineEdit(str(HORIZON))
         self.transaction_loss_input = QLineEdit(str(TRANSACTION_LOSS_PCT))
         self.trading_days_input = QLineEdit(str(TRADING_DAYS_PER_YEAR))
-        self.p_win_threshold_input = QLineEdit(str(P_WIN_THRESHOLD))
         self.holdout_days_input = QLineEdit(str(HOLDOUT_DAYS))
         self.live_model_input = QComboBox()
         self.live_model_input.addItems(
@@ -216,11 +207,6 @@ class FXPipelineWindow(QMainWindow):
             ]
         )
         self.live_model_input.setCurrentText(LIVE_MODEL)
-        self.live_decision_mode_input = QComboBox()
-        self.live_decision_mode_input.addItems(
-            ["threshold", "threshold_top1", "threshold_top3", "top1", "top3", "top_decile"]
-        )
-        self.live_decision_mode_input.setCurrentText(LIVE_DECISION_MODE)
 
         self.run_btn = QPushButton("Run Pipeline")
         self.run_btn.clicked.connect(self.start_pipeline)
@@ -273,10 +259,8 @@ class FXPipelineWindow(QMainWindow):
         params_form.addRow("HORIZON", self.horizon_input)
         params_form.addRow("TRANSACTION_LOSS_PCT", self.transaction_loss_input)
         params_form.addRow("TRADING_DAYS_PER_YEAR", self.trading_days_input)
-        params_form.addRow("P_WIN_THRESHOLD", self.p_win_threshold_input)
         params_form.addRow("HOLDOUT_DAYS", self.holdout_days_input)
         params_form.addRow("LIVE_MODEL", self.live_model_input)
-        params_form.addRow("LIVE_DECISION_MODE", self.live_decision_mode_input)
 
         action_row = QHBoxLayout()
         action_row.addWidget(self.download_raw_btn)
@@ -434,15 +418,8 @@ class FXPipelineWindow(QMainWindow):
                 self.trading_days_input,
                 "TRADING_DAYS_PER_YEAR",
             )
-            p_win_threshold = self._read_nonnegative_float(
-                self.p_win_threshold_input,
-                "P_WIN_THRESHOLD",
-            )
             holdout_days = self._read_int(self.holdout_days_input, "HOLDOUT_DAYS")
             live_model = self.live_model_input.currentText().strip()
-            live_decision_mode = self.live_decision_mode_input.currentText().strip()
-            if p_win_threshold > 1:
-                raise ValueError("P_WIN_THRESHOLD must be between 0 and 1")
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Invalid Input", str(exc))
             return
@@ -465,10 +442,8 @@ class FXPipelineWindow(QMainWindow):
             horizon=horizon,
             transaction_loss_pct=transaction_loss_pct,
             trading_days_per_year=trading_days_per_year,
-            p_win_threshold=p_win_threshold,
             holdout_days=holdout_days,
             live_model=live_model,
-            live_decision_mode=live_decision_mode,
             output_dir=self.output_dir,
         )
         self.pipeline_worker.moveToThread(self.pipeline_thread)

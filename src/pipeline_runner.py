@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.ticker import PercentFormatter
-from sklearn.metrics import brier_score_loss
 
 from src.data_pipeline import load_csv, parse_and_sort_dates
 from src.feature_engineering import compute_future_returns
@@ -17,8 +16,6 @@ from src.long_format import build_long
 from src.pnl_analysis import (
     compute_equal_weight_pnl,
     compute_top_k_pnl,
-    compute_top_quantile_pnl,
-    compute_threshold_pnl,
     cumulative_annualized_curve,
     perf_stats,
 )
@@ -26,7 +23,6 @@ from src.walkforward_model import run_walkforward_model
 
 LogFn = Callable[[str], None] | None
 ProgressFn = Callable[[int], None] | None
-DEFAULT_THRESHOLD_SWEEP = [0.50, 0.52, 0.55, 0.58, 0.60]
 LIVE_MODEL_COLUMNS = {
     "ensemble": "pred_ensemble",
     "specialist_ensemble": "pred_specialist_ensemble",
@@ -44,10 +40,7 @@ LIVE_MODEL_COLUMNS = {
 }
 
 
-def build_score_bucket_diagnostics(
-    pred_df: pd.DataFrame,
-    model_cols: list[str],
-) -> pd.DataFrame:
+def build_score_bucket_diagnostics(pred_df: pd.DataFrame, model_cols: list[str]) -> pd.DataFrame:
     """Summarize score buckets and realized outcomes by model."""
     rows: list[dict[str, float | int | str]] = []
     for model_col in model_cols:
@@ -96,75 +89,45 @@ def build_score_bucket_diagnostics(
     return pd.DataFrame(rows)
 
 
-def build_threshold_sweep(
-    pred_df: pd.DataFrame,
-    model_cols: list[str],
-    thresholds: list[float],
-    transaction_loss_pct: float,
-    trading_days_per_year: int,
-) -> pd.DataFrame:
-    """Evaluate thresholded trading behavior across a small grid of thresholds."""
-    rows: list[dict[str, float | str]] = []
-    for model_col in model_cols:
-        for threshold in thresholds:
-            pnl_df = compute_threshold_pnl(
-                pred_df,
-                pred_col=model_col,
-                p_win_threshold=threshold,
-                transaction_loss_pct=transaction_loss_pct,
-            )
-            stats = perf_stats(pnl_df, trading_days_per_year=trading_days_per_year)
-            rows.append(
-                {
-                    "model": model_col,
-                    "threshold": threshold,
-                    **stats,
-                }
-            )
-    return pd.DataFrame(rows)
-
-
 def build_ensemble_benefit(
     top_selection_df: pd.DataFrame,
     ensemble_models: list[str],
 ) -> pd.DataFrame:
-    """Compare ensemble selectors against the best non-ensemble single model by Top-K economics."""
+    """Compare Top-1 ensembles against the best non-ensemble single model."""
     rows: list[dict[str, float | str]] = []
     non_ensemble_df = top_selection_df[~top_selection_df["model"].isin(ensemble_models)].copy()
-    for selection in ["top1", "top3", "threshold_top1"]:
-        selection_non_ensemble = non_ensemble_df[non_ensemble_df["selection"] == selection]
-        if selection_non_ensemble.empty:
+    selection_non_ensemble = non_ensemble_df[non_ensemble_df["selection"] == "top1"]
+    if selection_non_ensemble.empty:
+        return pd.DataFrame(rows)
+    best_single_return = selection_non_ensemble.sort_values(
+        ["Annualized Return", "Sharpe"], ascending=[False, False]
+    ).iloc[0]
+    best_single_sharpe = selection_non_ensemble.sort_values(
+        ["Sharpe", "Annualized Return"], ascending=[False, False]
+    ).iloc[0]
+    for ensemble_model in ensemble_models:
+        ensemble_row = top_selection_df[
+            (top_selection_df["model"] == ensemble_model) & (top_selection_df["selection"] == "top1")
+        ]
+        if ensemble_row.empty:
             continue
-        best_single_return = selection_non_ensemble.sort_values(
-            ["Annualized Return", "Sharpe"], ascending=[False, False]
-        ).iloc[0]
-        best_single_sharpe = selection_non_ensemble.sort_values(
-            ["Sharpe", "Annualized Return"], ascending=[False, False]
-        ).iloc[0]
-        for ensemble_model in ensemble_models:
-            ensemble_row = top_selection_df[
-                (top_selection_df["model"] == ensemble_model)
-                & (top_selection_df["selection"] == selection)
-            ]
-            if ensemble_row.empty:
-                continue
-            ensemble_row = ensemble_row.iloc[0]
-            rows.append(
-                {
-                    "model": ensemble_model,
-                    "selection": selection,
-                    "metric": "Annualized Return Improvement vs Best Single",
-                    "value": float(ensemble_row["Annualized Return"] - best_single_return["Annualized Return"]),
-                }
-            )
-            rows.append(
-                {
-                    "model": ensemble_model,
-                    "selection": selection,
-                    "metric": "Sharpe Improvement vs Best Single",
-                    "value": float(ensemble_row["Sharpe"] - best_single_sharpe["Sharpe"]),
-                }
-            )
+        ensemble_row = ensemble_row.iloc[0]
+        rows.append(
+            {
+                "model": ensemble_model,
+                "selection": "top1",
+                "metric": "Annualized Return Improvement vs Best Single",
+                "value": float(ensemble_row["Annualized Return"] - best_single_return["Annualized Return"]),
+            }
+        )
+        rows.append(
+            {
+                "model": ensemble_model,
+                "selection": "top1",
+                "metric": "Sharpe Improvement vs Best Single",
+                "value": float(ensemble_row["Sharpe"] - best_single_sharpe["Sharpe"]),
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -180,10 +143,10 @@ def diagnostics_guide_text() -> str:
             "",
             "Key files",
             "- performance_summary.csv: selected LIVE_MODEL only.",
-            "- top_selection_diagnostics.csv: holdout Top-1 / Top-3 / Top-Decile results for every prediction column.",
-            "- model_diagnostics.csv: holdout threshold-style diagnostics for every prediction column.",
+            "- top_selection_diagnostics.csv: holdout Top-1 results for every prediction column.",
+            "- model_diagnostics.csv: holdout score dispersion and Top-1 economics for every prediction column.",
             "- score_bucket_diagnostics.csv: holdout score buckets versus realized outcomes.",
-            "- ensemble_benefit.csv: Top-1 / Top-3 ensemble improvements versus the best single non-ensemble model.",
+            "- ensemble_benefit.csv: Top-1 ensemble improvements versus the best single non-ensemble model.",
             "- diagnostics_summary.txt: concise holdout observations shown in the GUI.",
             "",
             "Ensembles",
@@ -191,101 +154,49 @@ def diagnostics_guide_text() -> str:
             "- pred_specialist_ensemble: equal-weight daily rank-percentile blend of lgbm_deep_returns_momentum and logreg_returns_momentum.",
             "",
             "Interpretation",
-            "- Scores are not calibrated probabilities unless the model is explicitly being used that way.",
-            "- For specialist_ensemble, the score is a rank-based selection score, not P(Win).",
+            "- Scores are ranking signals, not calibrated probabilities.",
+            "- For specialist_ensemble, the score is a rank-based selection score.",
         ]
     )
 
 
-def selected_trade_rows(
-    pred_df: pd.DataFrame,
-    pred_col: str,
-    selection: str,
-    p_win_threshold: float,
-) -> pd.DataFrame:
-    """Return the rows actually selected by a daily relative-selection rule."""
+def selected_trade_rows(pred_df: pd.DataFrame, pred_col: str) -> pd.DataFrame:
+    """Return the Top-1 rows selected by a daily ranking rule."""
     selected_rows = []
     for _, grp in pred_df.groupby("Date", sort=True):
-        ordered = grp.sort_values(pred_col, ascending=False)
-        if selection == "threshold_top1":
-            eligible = ordered[ordered[pred_col] > p_win_threshold].head(1)
-        elif selection == "top1":
-            eligible = ordered.head(1)
-        elif selection == "top3":
-            eligible = ordered.head(3)
-        elif selection == "top_decile":
-            eligible = ordered.head(max(1, int(np.ceil(len(ordered) * 0.10))))
-        else:
-            raise ValueError(f"Unknown selection '{selection}'")
-        if not eligible.empty:
-            selected_rows.append(eligible)
-    if not selected_rows:
-        return pred_df.iloc[0:0].copy()
-    return pd.concat(selected_rows, ignore_index=True)
+        selected_rows.append(grp.sort_values(pred_col, ascending=False).head(1))
+    return pd.concat(selected_rows, ignore_index=True) if selected_rows else pred_df.iloc[0:0].copy()
 
 
 def build_top_selection_diagnostics(
     pred_df: pd.DataFrame,
     model_cols: list[str],
-    p_win_threshold: float,
     transaction_loss_pct: float,
     trading_days_per_year: int,
 ) -> pd.DataFrame:
-    """Compare models as Top-1/Top-3 selectors on the evaluation slice."""
+    """Compare models as Top-1 selectors on the evaluation slice."""
     rows: list[dict[str, float | str]] = []
-    selection_map = {
-        "threshold_top1": lambda col: compute_threshold_pnl(
+    for model_col in model_cols:
+        pnl_df = compute_top_k_pnl(
             pred_df,
-            pred_col=col,
-            p_win_threshold=p_win_threshold,
-            transaction_loss_pct=transaction_loss_pct,
-            max_positions=1,
-        ),
-        "top1": lambda col: compute_top_k_pnl(
-            pred_df,
-            pred_col=col,
+            pred_col=model_col,
             transaction_loss_pct=transaction_loss_pct,
             k=1,
-        ),
-        "top3": lambda col: compute_top_k_pnl(
-            pred_df,
-            pred_col=col,
-            transaction_loss_pct=transaction_loss_pct,
-            k=3,
-        ),
-        "top_decile": lambda col: compute_top_quantile_pnl(
-            pred_df,
-            pred_col=col,
-            transaction_loss_pct=transaction_loss_pct,
-            top_quantile=0.10,
-        ),
-    }
-    for model_col in model_cols:
-        for selection_name, pnl_builder in selection_map.items():
-            pnl_df = pnl_builder(model_col)
-            stats = perf_stats(pnl_df, trading_days_per_year=trading_days_per_year)
-            selected_df = selected_trade_rows(
-                pred_df,
-                pred_col=model_col,
-                selection=selection_name,
-                p_win_threshold=p_win_threshold,
-            )
-            realized_win_rate = (
-                float(selected_df["profit_target"].mean()) if not selected_df.empty else np.nan
-            )
-            avg_selected_next_ret = (
-                float(selected_df["next_ret"].mean()) if not selected_df.empty else np.nan
-            )
-            rows.append(
-                {
-                    "model": model_col,
-                    "selection": selection_name,
-                    "selected_rows": int(len(selected_df)),
-                    "realized_win_rate": realized_win_rate,
-                    "avg_selected_next_ret": avg_selected_next_ret,
-                    **stats,
-                }
-            )
+        )
+        stats = perf_stats(pnl_df, trading_days_per_year=trading_days_per_year)
+        selected_df = selected_trade_rows(pred_df, pred_col=model_col)
+        realized_win_rate = float(selected_df["profit_target"].mean()) if not selected_df.empty else np.nan
+        avg_selected_next_ret = float(selected_df["next_ret"].mean()) if not selected_df.empty else np.nan
+        rows.append(
+            {
+                "model": model_col,
+                "selection": "top1",
+                "selected_rows": int(len(selected_df)),
+                "realized_win_rate": realized_win_rate,
+                "avg_selected_next_ret": avg_selected_next_ret,
+                **stats,
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -314,12 +225,11 @@ def split_holdout_period(pred_df: pd.DataFrame, holdout_days: int) -> tuple[pd.D
 def strategy_frame(
     pred_df: pd.DataFrame,
     pred_col: str,
-    p_win_threshold: float,
     transaction_loss_pct: float,
     trading_days_per_year: int,
     live_model_label: str,
 ) -> tuple[list[tuple[str, pd.DataFrame]], pd.DataFrame]:
-    """Build strategy PnL frames and summary stats for a chosen live prediction column."""
+    """Build Top-1 strategy and benchmark PnL frames for a chosen live prediction column."""
     strategy_series = [
         (
             f"{live_model_label} Top-1",
@@ -328,53 +238,6 @@ def strategy_frame(
                 pred_col=pred_col,
                 transaction_loss_pct=transaction_loss_pct,
                 k=1,
-            ),
-        ),
-        (
-            f"{live_model_label} Top-3",
-            compute_top_k_pnl(
-                pred_df,
-                pred_col=pred_col,
-                transaction_loss_pct=transaction_loss_pct,
-                k=3,
-            ),
-        ),
-        (
-            f"{live_model_label} Top-Decile",
-            compute_top_quantile_pnl(
-                pred_df,
-                pred_col=pred_col,
-                transaction_loss_pct=transaction_loss_pct,
-                top_quantile=0.10,
-            ),
-        ),
-        (
-            f"{live_model_label} Threshold Top-1",
-            compute_threshold_pnl(
-                pred_df,
-                pred_col=pred_col,
-                p_win_threshold=p_win_threshold,
-                transaction_loss_pct=transaction_loss_pct,
-                max_positions=1,
-            ),
-        ),
-        (
-            f"{live_model_label} Threshold Top-3",
-            compute_threshold_pnl(
-                pred_df,
-                pred_col=pred_col,
-                p_win_threshold=p_win_threshold,
-                transaction_loss_pct=transaction_loss_pct,
-                max_positions=3,
-            ),
-        ),
-        (
-            f"{live_model_label} Threshold",
-            compute_threshold_pnl(
-                pred_df,
-                pred_col=pred_col,
-                p_win_threshold=p_win_threshold,
-                transaction_loss_pct=transaction_loss_pct,
             ),
         ),
         (
@@ -391,22 +254,9 @@ def strategy_frame(
     return strategy_series, stats_df
 
 
-def resolve_live_strategy_name(live_model_label: str, live_decision_mode: str) -> str:
-    """Map the user-facing live decision mode to a strategy row name."""
-    strategy_name_map = {
-        "threshold": f"{live_model_label} Threshold",
-        "threshold_top1": f"{live_model_label} Threshold Top-1",
-        "threshold_top3": f"{live_model_label} Threshold Top-3",
-        "top1": f"{live_model_label} Top-1",
-        "top3": f"{live_model_label} Top-3",
-        "top_decile": f"{live_model_label} Top-Decile",
-    }
-    if live_decision_mode not in strategy_name_map:
-        raise ValueError(
-            f"Unsupported LIVE_DECISION_MODE '{live_decision_mode}'. "
-            f"Expected one of: {sorted(strategy_name_map)}"
-        )
-    return strategy_name_map[live_decision_mode]
+def resolve_live_strategy_name(live_model_label: str) -> str:
+    """Return the single live strategy row name."""
+    return f"{live_model_label} Top-1"
 
 
 def build_diagnostics_summary(
@@ -422,14 +272,9 @@ def build_diagnostics_summary(
         ["Sharpe", "Annualized Return"],
         ascending=[False, False],
     )
-    top3_df = top_selection_df[top_selection_df["selection"] == "top3"].sort_values(
-        ["Sharpe", "Annualized Return"],
-        ascending=[False, False],
-    )
     best_top1 = top1_df.iloc[0]
-    best_top3 = top3_df.iloc[0]
-    best_threshold_model = model_diagnostics_df.sort_values(
-        ["Threshold Sharpe", "Threshold Annualized Return"],
+    best_top1_model_row = model_diagnostics_df.sort_values(
+        ["Top-1 Sharpe", "Top-1 Annualized Return"],
         ascending=[False, False],
     ).iloc[0]
     avg_corr = correlation_df.where(~np.eye(len(correlation_df), dtype=bool)).stack().mean()
@@ -447,14 +292,9 @@ def build_diagnostics_summary(
                 f"Win rate {best_top1['realized_win_rate'] * 100:.1f}%"
             ),
             (
-                f"Best holdout Top-3 selector: {best_top3['model']} | "
-                f"AnnRet {best_top3['Annualized Return'] * 100:.1f}% | "
-                f"Sharpe {best_top3['Sharpe']:.2f}"
-            ),
-            (
-                f"Best holdout threshold model: {best_threshold_model['model']} | "
-                f"AnnRet {best_threshold_model['Threshold Annualized Return'] * 100:.1f}% | "
-                f"Sharpe {best_threshold_model['Threshold Sharpe']:.2f}"
+                f"Highest-scoring Top-1 model diagnostics row: {best_top1_model_row['model']} | "
+                f"AnnRet {best_top1_model_row['Top-1 Annualized Return'] * 100:.1f}% | "
+                f"Sharpe {best_top1_model_row['Top-1 Sharpe']:.2f}"
             ),
             f"Average pairwise prediction correlation: {avg_corr:.3f}",
         ]
@@ -469,10 +309,8 @@ def run_pipeline(
     horizon: int,
     transaction_loss_pct: float,
     trading_days_per_year: int,
-    p_win_threshold: float,
     holdout_days: int,
     live_model: str,
-    live_decision_mode: str,
     output_dir: Path,
     log_fn: LogFn = None,
     progress_fn: ProgressFn = None,
@@ -511,9 +349,8 @@ def run_pipeline(
     log(
         "Running walk-forward models "
         f"(fit={fit_days}, test={test_days}, "
-        f"step={step_days}, p_win_threshold={p_win_threshold}, "
-        f"holdout_days={holdout_days}, live_model={live_model}, "
-        f"live_decision_mode={live_decision_mode})"
+        f"step={step_days}, holdout_days={holdout_days}, "
+        f"live_model={live_model}, live_decision_mode=top1)"
     )
     set_progress(60)
     pred_df, window_diag_df = run_walkforward_model(
@@ -536,7 +373,6 @@ def run_pipeline(
     holdout_strategy_series, holdout_stats_df = strategy_frame(
         holdout_pred_df,
         pred_col=live_pred_col,
-        p_win_threshold=p_win_threshold,
         transaction_loss_pct=transaction_loss_pct,
         trading_days_per_year=trading_days_per_year,
         live_model_label=live_model,
@@ -544,7 +380,6 @@ def run_pipeline(
     research_strategy_series, research_stats_df = strategy_frame(
         research_pred_df,
         pred_col=live_pred_col,
-        p_win_threshold=p_win_threshold,
         transaction_loss_pct=transaction_loss_pct,
         trading_days_per_year=trading_days_per_year,
         live_model_label=live_model,
@@ -552,12 +387,11 @@ def run_pipeline(
     full_strategy_series, full_stats_df = strategy_frame(
         pred_df,
         pred_col=live_pred_col,
-        p_win_threshold=p_win_threshold,
         transaction_loss_pct=transaction_loss_pct,
         trading_days_per_year=trading_days_per_year,
         live_model_label=live_model,
     )
-    selected_strategy_name = resolve_live_strategy_name(live_model, live_decision_mode)
+    selected_strategy_name = resolve_live_strategy_name(live_model)
     holdout_curves = {
         name: cumulative_annualized_curve(series_df, trading_days_per_year=trading_days_per_year)
         for name, series_df in holdout_strategy_series
@@ -568,56 +402,37 @@ def run_pipeline(
     model_cols = [col for col in eval_pred_df.columns if col.startswith("pred_")]
     correlation_df = eval_pred_df[model_cols].corr()
     spearman_correlation_df = eval_pred_df[model_cols].corr(method="spearman")
-    threshold_decisions = eval_pred_df[model_cols].gt(p_win_threshold).astype(int)
-    threshold_agreement_df = threshold_decisions.corr()
-
     diagnostic_rows = []
     for model_col in model_cols:
-        stats = perf_stats(
-            compute_threshold_pnl(
+        top1_stats = perf_stats(
+            compute_top_k_pnl(
                 eval_pred_df,
                 pred_col=model_col,
-                p_win_threshold=p_win_threshold,
                 transaction_loss_pct=transaction_loss_pct,
+                k=1,
             ),
             trading_days_per_year=trading_days_per_year,
         )
         diagnostic_rows.append(
             {
                 "model": model_col,
-                "brier_score": brier_score_loss(eval_pred_df["profit_target"], eval_pred_df[model_col]),
                 "mean_score": float(eval_pred_df[model_col].mean()),
                 "std_score": float(eval_pred_df[model_col].std()),
-                "fraction_above_threshold": float((eval_pred_df[model_col] > p_win_threshold).mean()),
-                "Threshold Annualized Return": stats["Annualized Return"],
-                "Threshold Sharpe": stats["Sharpe"],
-                "Threshold Trade Rate": stats["Trade Rate"],
+                "min_score": float(eval_pred_df[model_col].min()),
+                "max_score": float(eval_pred_df[model_col].max()),
+                "Top-1 Annualized Return": top1_stats["Annualized Return"],
+                "Top-1 Sharpe": top1_stats["Sharpe"],
+                "Top-1 Avg Selected Score": top1_stats["Avg Selected Score"],
             }
         )
-    model_diagnostics_df = pd.DataFrame(diagnostic_rows).sort_values("brier_score")
-    threshold_model_diagnostics_df = model_diagnostics_df.sort_values(
-        ["Threshold Sharpe", "Threshold Annualized Return"],
+    model_diagnostics_df = pd.DataFrame(diagnostic_rows).sort_values(
+        ["Top-1 Sharpe", "Top-1 Annualized Return"],
         ascending=[False, False],
     )
     bucket_diagnostics_df = build_score_bucket_diagnostics(eval_pred_df, model_cols)
-    threshold_sweep_models = [
-        "pred_specialist_ensemble",
-        "pred_rf_corr_regime",
-        "pred_logreg_returns_momentum",
-        "pred_lgbm_deep_corr_regime",
-    ]
-    threshold_values = sorted({p_win_threshold, *DEFAULT_THRESHOLD_SWEEP})
-    threshold_sweep_df = build_threshold_sweep(
-        eval_pred_df,
-        model_cols=threshold_sweep_models,
-        thresholds=threshold_values,
-        transaction_loss_pct=transaction_loss_pct,
-        trading_days_per_year=trading_days_per_year,
-    )
     top_selection_df = build_top_selection_diagnostics(
         eval_pred_df,
         model_cols=model_cols,
-        p_win_threshold=p_win_threshold,
         transaction_loss_pct=transaction_loss_pct,
         trading_days_per_year=trading_days_per_year,
     )
@@ -635,10 +450,9 @@ def run_pipeline(
                 "horizon": horizon,
                 "transaction_loss_pct": transaction_loss_pct,
                 "trading_days_per_year": trading_days_per_year,
-                "p_win_threshold": p_win_threshold,
                 "holdout_days": holdout_days,
                 "live_model": live_model,
-                "live_decision_mode": live_decision_mode,
+                "live_decision_mode": "top1",
                 "live_prediction_column": live_pred_col,
                 "research_test_dates": int(research_pred_df["Date"].nunique()),
                 "holdout_test_dates": int(holdout_pred_df["Date"].nunique()),
@@ -654,18 +468,16 @@ def run_pipeline(
     window_diag_df.to_csv(output_dir / "window_model_diagnostics.csv", index=False)
     correlation_df.to_csv(output_dir / "model_prediction_correlation.csv")
     spearman_correlation_df.to_csv(output_dir / "model_prediction_rank_correlation.csv")
-    threshold_agreement_df.to_csv(output_dir / "model_threshold_agreement.csv")
-    threshold_model_diagnostics_df.to_csv(output_dir / "model_diagnostics.csv", index=False)
+    model_diagnostics_df.to_csv(output_dir / "model_diagnostics.csv", index=False)
     ensemble_benefit_df.to_csv(output_dir / "ensemble_benefit.csv", index=False)
     bucket_diagnostics_df.to_csv(output_dir / "score_bucket_diagnostics.csv", index=False)
-    threshold_sweep_df.to_csv(output_dir / "threshold_sweep.csv", index=False)
     top_selection_df.to_csv(output_dir / "top_selection_diagnostics.csv", index=False)
     (output_dir / "diagnostics_guide.txt").write_text(diagnostics_guide_text(), encoding="utf-8")
     diagnostics_summary = build_diagnostics_summary(
         selected_strategy_name=selected_strategy_name,
         holdout_stats_df=holdout_stats_df,
         top_selection_df=top_selection_df,
-        model_diagnostics_df=threshold_model_diagnostics_df,
+        model_diagnostics_df=model_diagnostics_df,
         correlation_df=correlation_df,
     )
     (output_dir / "diagnostics_summary.txt").write_text(diagnostics_summary, encoding="utf-8")
@@ -677,14 +489,8 @@ def run_pipeline(
         safe_name = strategy_name.lower().replace(" ", "_").replace("(", "").replace(")", "").replace("-", "_")
         strategy_df.to_csv(output_dir / f"{safe_name}.csv", index=False)
     log(
-        "Best holdout selectors: "
-        + ", ".join(
-            [
-                f"top1={top_selection_df[top_selection_df['selection'] == 'top1'].sort_values(['Sharpe','Annualized Return'], ascending=[False, False]).iloc[0]['model']}",
-                f"top3={top_selection_df[top_selection_df['selection'] == 'top3'].sort_values(['Sharpe','Annualized Return'], ascending=[False, False]).iloc[0]['model']}",
-                f"threshold={threshold_model_diagnostics_df.iloc[0]['model']}",
-            ]
-        )
+        "Best holdout Top-1 selector: "
+        f"{top_selection_df.sort_values(['Sharpe','Annualized Return'], ascending=[False, False]).iloc[0]['model']}"
     )
     log(
         "Average pairwise prediction correlation: "
@@ -695,23 +501,7 @@ def run_pipeline(
     set_progress(90)
     plot_path = output_dir / "pnl_curves.png"
     plt.figure(figsize=(12, 6))
-    if live_model == "specialist_ensemble" and not live_decision_mode.startswith("threshold"):
-        plotted_strategies = [
-            f"{live_model} Top-1",
-            f"{live_model} Top-3",
-            f"{live_model} Top-Decile",
-            "Equal-weight",
-        ]
-    else:
-        plotted_strategies = [
-            f"{live_model} Top-1",
-            f"{live_model} Top-3",
-            f"{live_model} Top-Decile",
-            f"{live_model} Threshold Top-1",
-            f"{live_model} Threshold Top-3",
-            f"{live_model} Threshold",
-            "Equal-weight",
-        ]
+    plotted_strategies = [f"{live_model} Top-1", "Equal-weight"]
     for strategy_name in plotted_strategies:
         curve_df = holdout_curves[strategy_name]
         is_selected = strategy_name == selected_strategy_name

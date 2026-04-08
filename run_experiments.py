@@ -12,10 +12,8 @@ from src.config import (
     FEATURE_DATA_FILENAME,
     FIT_DAYS,
     HORIZON,
-    LIVE_DECISION_MODE,
     HOLDOUT_DAYS,
     LIVE_MODEL,
-    P_WIN_THRESHOLD,
     STEP_DAYS,
     TEST_DAYS,
     TRADING_DAYS_PER_YEAR,
@@ -81,13 +79,6 @@ def parse_args() -> argparse.Namespace:
         help="One or more TRADING_DAYS_PER_YEAR values.",
     )
     parser.add_argument(
-        "--p-win-threshold",
-        nargs="+",
-        type=float,
-        default=[P_WIN_THRESHOLD],
-        help="One or more score thresholds between 0 and 1.",
-    )
-    parser.add_argument(
         "--holdout-days",
         nargs="+",
         type=int,
@@ -118,9 +109,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--live-decision-mode",
         nargs="+",
-        default=[LIVE_DECISION_MODE],
-        choices=["threshold", "threshold_top1", "threshold_top3", "top1", "top3", "top_decile"],
-        help="One or more live decision modes.",
+        default=["top1"],
+        choices=["top1"],
+        help="Top-1 only live decision mode.",
     )
     return parser.parse_args()
 
@@ -133,7 +124,6 @@ def format_run_name(params: dict[str, int | float]) -> str:
         f"h{params['horizon']}_"
         f"cost{params['transaction_loss_pct']}_"
         f"tdpy{params['trading_days_per_year']}_"
-        f"pwin{params['p_win_threshold']}_"
         f"holdout{params['holdout_days']}_"
         f"live{params['live_model']}_"
         f"mode{params['live_decision_mode']}"
@@ -157,7 +147,6 @@ def main() -> None:
             args.horizon,
             args.transaction_loss_pct,
             args.trading_days_per_year,
-            args.p_win_threshold,
             args.holdout_days,
             args.live_model,
             args.live_decision_mode,
@@ -176,10 +165,9 @@ def main() -> None:
             "horizon": combo[3],
             "transaction_loss_pct": combo[4],
             "trading_days_per_year": combo[5],
-            "p_win_threshold": combo[6],
-            "holdout_days": combo[7],
-            "live_model": combo[8],
-            "live_decision_mode": combo[9],
+            "holdout_days": combo[6],
+            "live_model": combo[7],
+            "live_decision_mode": combo[8],
         }
         run_name = format_run_name(params)
         run_dir = results_dir / run_name
@@ -197,10 +185,8 @@ def main() -> None:
                 horizon=params["horizon"],
                 transaction_loss_pct=params["transaction_loss_pct"],
                 trading_days_per_year=params["trading_days_per_year"],
-                p_win_threshold=params["p_win_threshold"],
                 holdout_days=params["holdout_days"],
                 live_model=params["live_model"],
-                live_decision_mode=params["live_decision_mode"],
                 output_dir=run_dir,
                 log_fn=log,
             )

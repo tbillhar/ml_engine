@@ -5,10 +5,8 @@ from pathlib import Path
 from src.config import (
     FIT_DAYS,
     HORIZON,
-    LIVE_DECISION_MODE,
     HOLDOUT_DAYS,
     LIVE_MODEL,
-    P_WIN_THRESHOLD,
     STEP_DAYS,
     TEST_DAYS,
     TRADING_DAYS_PER_YEAR,
@@ -28,10 +26,8 @@ def main() -> None:
         horizon=HORIZON,
         transaction_loss_pct=TRANSACTION_LOSS_PCT,
         trading_days_per_year=TRADING_DAYS_PER_YEAR,
-        p_win_threshold=P_WIN_THRESHOLD,
         holdout_days=HOLDOUT_DAYS,
         live_model=LIVE_MODEL,
-        live_decision_mode=LIVE_DECISION_MODE,
         output_dir=output_dir,
         log_fn=print,
     )
