@@ -51,6 +51,9 @@ from src.config import (
     RETRAIN_DETERIORATION_MAX_AVG_EV,
     RETRAIN_DETERIORATION_MIN_WIN_RATE,
     SPECIALIST_ENSEMBLE_MEMBERS,
+    SPECIALIST_MIN_MODEL_HOLD_DAYS,
+    SPECIALIST_SWITCH_MARGIN_MIN_AVG_EV,
+    SPECIALIST_SWITCH_REQUIRE_POSITIVE_EV,
     SPECIALIST_WEIGHTING_MODE,
     SPECIALIST_WEIGHT_LOOKBACK_DAYS,
     STEP_DAYS,
@@ -84,6 +87,9 @@ class PipelineWorker(QObject):
         specialist_weighting_mode: str,
         specialist_ensemble_members: list[str],
         specialist_weight_lookback_days: int,
+        specialist_min_model_hold_days: int,
+        specialist_switch_margin_min_avg_ev: float,
+        specialist_switch_require_positive_ev: bool,
         retrain_deterioration_lookback_days: int,
         retrain_deterioration_min_win_rate: float,
         retrain_deterioration_max_avg_ev: float,
@@ -102,6 +108,9 @@ class PipelineWorker(QObject):
         self.specialist_weighting_mode = specialist_weighting_mode
         self.specialist_ensemble_members = specialist_ensemble_members
         self.specialist_weight_lookback_days = specialist_weight_lookback_days
+        self.specialist_min_model_hold_days = specialist_min_model_hold_days
+        self.specialist_switch_margin_min_avg_ev = specialist_switch_margin_min_avg_ev
+        self.specialist_switch_require_positive_ev = specialist_switch_require_positive_ev
         self.retrain_deterioration_lookback_days = retrain_deterioration_lookback_days
         self.retrain_deterioration_min_win_rate = retrain_deterioration_min_win_rate
         self.retrain_deterioration_max_avg_ev = retrain_deterioration_max_avg_ev
@@ -122,6 +131,9 @@ class PipelineWorker(QObject):
                 specialist_weighting_mode=self.specialist_weighting_mode,
                 specialist_ensemble_models=self.specialist_ensemble_members,
                 specialist_weight_lookback_days=self.specialist_weight_lookback_days,
+                specialist_min_model_hold_days=self.specialist_min_model_hold_days,
+                specialist_switch_margin_min_avg_ev=self.specialist_switch_margin_min_avg_ev,
+                specialist_switch_require_positive_ev=self.specialist_switch_require_positive_ev,
                 retrain_deterioration_lookback_days=self.retrain_deterioration_lookback_days,
                 retrain_deterioration_min_win_rate=self.retrain_deterioration_min_win_rate,
                 retrain_deterioration_max_avg_ev=self.retrain_deterioration_max_avg_ev,
@@ -221,6 +233,13 @@ class FXPipelineWindow(QMainWindow):
         self.specialist_weighting_mode_input.setCurrentText(SPECIALIST_WEIGHTING_MODE)
         self.specialist_members_input = QLineEdit(",".join(SPECIALIST_ENSEMBLE_MEMBERS))
         self.specialist_lookback_input = QLineEdit(str(SPECIALIST_WEIGHT_LOOKBACK_DAYS))
+        self.specialist_min_hold_input = QLineEdit(str(SPECIALIST_MIN_MODEL_HOLD_DAYS))
+        self.specialist_switch_margin_input = QLineEdit(str(SPECIALIST_SWITCH_MARGIN_MIN_AVG_EV))
+        self.specialist_positive_ev_input = QComboBox()
+        self.specialist_positive_ev_input.addItems(["true", "false"])
+        self.specialist_positive_ev_input.setCurrentText(
+            "true" if SPECIALIST_SWITCH_REQUIRE_POSITIVE_EV else "false"
+        )
         self.retrain_lookback_input = QLineEdit(str(RETRAIN_DETERIORATION_LOOKBACK_DAYS))
         self.retrain_win_rate_input = QLineEdit(str(RETRAIN_DETERIORATION_MIN_WIN_RATE))
         self.retrain_avg_ev_input = QLineEdit(str(RETRAIN_DETERIORATION_MAX_AVG_EV))
@@ -321,6 +340,9 @@ class FXPipelineWindow(QMainWindow):
         params_form.addRow("SPECIALIST_WEIGHTING_MODE", self.specialist_weighting_mode_input)
         params_form.addRow("SPECIALIST_ENSEMBLE_MEMBERS", self.specialist_members_input)
         params_form.addRow("SPECIALIST_WEIGHT_LOOKBACK_DAYS", self.specialist_lookback_input)
+        params_form.addRow("SPECIALIST_MIN_MODEL_HOLD_DAYS", self.specialist_min_hold_input)
+        params_form.addRow("SPECIALIST_SWITCH_MARGIN_MIN_AVG_EV", self.specialist_switch_margin_input)
+        params_form.addRow("SPECIALIST_SWITCH_REQUIRE_POSITIVE_EV", self.specialist_positive_ev_input)
         params_form.addRow("RETRAIN_DET_LOOKBACK_DAYS", self.retrain_lookback_input)
         params_form.addRow("RETRAIN_DET_MIN_WIN_RATE", self.retrain_win_rate_input)
         params_form.addRow("RETRAIN_DET_MAX_AVG_EV", self.retrain_avg_ev_input)
@@ -510,6 +532,14 @@ class FXPipelineWindow(QMainWindow):
                 self.specialist_lookback_input,
                 "SPECIALIST_WEIGHT_LOOKBACK_DAYS",
             )
+            specialist_min_model_hold_days = self._read_int(
+                self.specialist_min_hold_input,
+                "SPECIALIST_MIN_MODEL_HOLD_DAYS",
+            )
+            specialist_switch_margin_min_avg_ev = float(self.specialist_switch_margin_input.text().strip())
+            specialist_switch_require_positive_ev = (
+                self.specialist_positive_ev_input.currentText().strip().lower() == "true"
+            )
             retrain_deterioration_lookback_days = self._read_int(
                 self.retrain_lookback_input,
                 "RETRAIN_DETERIORATION_LOOKBACK_DAYS",
@@ -543,6 +573,9 @@ class FXPipelineWindow(QMainWindow):
                 specialist_weight_lookback_days,
                 rebalance_days,
                 specialist_weighting_mode,
+                specialist_min_model_hold_days,
+                specialist_switch_margin_min_avg_ev,
+                specialist_switch_require_positive_ev,
                 retrain_deterioration_lookback_days,
                 retrain_deterioration_min_win_rate,
                 retrain_deterioration_max_avg_ev,
@@ -564,6 +597,9 @@ class FXPipelineWindow(QMainWindow):
             specialist_weighting_mode=specialist_weighting_mode,
             specialist_ensemble_members=specialist_ensemble_members,
             specialist_weight_lookback_days=specialist_weight_lookback_days,
+            specialist_min_model_hold_days=specialist_min_model_hold_days,
+            specialist_switch_margin_min_avg_ev=specialist_switch_margin_min_avg_ev,
+            specialist_switch_require_positive_ev=specialist_switch_require_positive_ev,
             retrain_deterioration_lookback_days=retrain_deterioration_lookback_days,
             retrain_deterioration_min_win_rate=retrain_deterioration_min_win_rate,
             retrain_deterioration_max_avg_ev=retrain_deterioration_max_avg_ev,

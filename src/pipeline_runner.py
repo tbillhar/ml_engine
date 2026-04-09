@@ -145,6 +145,9 @@ def diagnostics_guide_text(
     specialist_weight_lookback_days: int | None = None,
     rebalance_days: int | None = None,
     specialist_weighting_mode: str | None = None,
+    specialist_min_model_hold_days: int | None = None,
+    specialist_switch_margin_min_avg_ev: float | None = None,
+    specialist_switch_require_positive_ev: bool | None = None,
     retrain_deterioration_lookback_days: int | None = None,
     retrain_deterioration_min_win_rate: float | None = None,
     retrain_deterioration_max_avg_ev: float | None = None,
@@ -162,6 +165,17 @@ def diagnostics_guide_text(
     )
     rebalance_text = str(rebalance_days) if rebalance_days is not None else "configured rebalance"
     weighting_mode_text = specialist_weighting_mode or "configured weighting mode"
+    min_hold_text = str(specialist_min_model_hold_days) if specialist_min_model_hold_days is not None else "configured min hold"
+    switch_margin_text = (
+        f"{specialist_switch_margin_min_avg_ev:.6f}"
+        if specialist_switch_margin_min_avg_ev is not None
+        else "configured switch margin"
+    )
+    positive_ev_text = (
+        str(specialist_switch_require_positive_ev)
+        if specialist_switch_require_positive_ev is not None
+        else "configured positive-EV rule"
+    )
     deterioration_lookback_text = (
         str(retrain_deterioration_lookback_days)
         if retrain_deterioration_lookback_days is not None
@@ -190,6 +204,7 @@ def diagnostics_guide_text(
             "- model_diagnostics.csv: score dispersion diagnostics plus Top-1 economics for all models.",
             "- model_prediction_correlation.csv: holdout prediction correlation matrix.",
             "- top1_pick_overlap.csv: fraction of holdout dates where each pair of models picked the same Top-1 pair.",
+            "- model_switch_log.csv: daily active specialist model and switch/stay reason for the specialist router.",
             "- ensemble_benefit.csv: Top-1 ensemble improvements versus the best single non-ensemble model.",
             "- diagnostics_summary.txt: concise holdout observations shown in the GUI.",
             "",
@@ -198,11 +213,12 @@ def diagnostics_guide_text(
             (
                 f"- pred_specialist_ensemble: daily rank-percentile blend of {specialist_text}, "
                 f"weighted by trailing realized Top-1 success over the prior {lookback_text} out-of-sample dates "
-                f"using '{weighting_mode_text}' mode."
+                f"using '{weighting_mode_text}' mode. Sticky settings: min hold {min_hold_text}, "
+                f"switch margin {switch_margin_text}, require positive EV {positive_ev_text}."
             ),
             f"- Rebalancing: Top-1 strategies rebalance every {rebalance_text} day(s).",
             (
-                "- Retraining: models retrain on cadence or earlier if current-window broad-ensemble Top-1 "
+                "- Retraining: models retrain on cadence or earlier if current-window selected-live-model Top-1 "
                 f"performance over the last {deterioration_lookback_text} out-of-sample days has "
                 f"win rate <= {deterioration_win_rate_text} and avg ev_target <= {deterioration_avg_ev_text}."
             ),
@@ -457,6 +473,9 @@ def run_pipeline(
     specialist_weighting_mode: str,
     specialist_ensemble_models: list[str],
     specialist_weight_lookback_days: int,
+    specialist_min_model_hold_days: int,
+    specialist_switch_margin_min_avg_ev: float,
+    specialist_switch_require_positive_ev: bool,
     retrain_deterioration_lookback_days: int,
     retrain_deterioration_min_win_rate: float,
     retrain_deterioration_max_avg_ev: float,
@@ -516,6 +535,9 @@ def run_pipeline(
         specialist_weighting_mode=specialist_weighting_mode,
         specialist_ensemble_models=specialist_ensemble_models,
         specialist_weight_lookback_days=specialist_weight_lookback_days,
+        specialist_min_model_hold_days=specialist_min_model_hold_days,
+        specialist_switch_margin_min_avg_ev=specialist_switch_margin_min_avg_ev,
+        specialist_switch_require_positive_ev=specialist_switch_require_positive_ev,
         retrain_deterioration_lookback_days=retrain_deterioration_lookback_days,
         retrain_deterioration_min_win_rate=retrain_deterioration_min_win_rate,
         retrain_deterioration_max_avg_ev=retrain_deterioration_max_avg_ev,
@@ -602,6 +624,9 @@ def run_pipeline(
                 "specialist_weighting_mode": specialist_weighting_mode,
                 "specialist_ensemble_members": "|".join(specialist_ensemble_models),
                 "specialist_weight_lookback_days": specialist_weight_lookback_days,
+                "specialist_min_model_hold_days": specialist_min_model_hold_days,
+                "specialist_switch_margin_min_avg_ev": specialist_switch_margin_min_avg_ev,
+                "specialist_switch_require_positive_ev": specialist_switch_require_positive_ev,
                 "retrain_deterioration_lookback_days": retrain_deterioration_lookback_days,
                 "retrain_deterioration_min_win_rate": retrain_deterioration_min_win_rate,
                 "retrain_deterioration_max_avg_ev": retrain_deterioration_max_avg_ev,
@@ -612,10 +637,29 @@ def run_pipeline(
     )
 
     log("Saving CSV outputs")
+    model_switch_log_df = (
+        holdout_pred_df[
+            [
+                "Date",
+                "specialist_ensemble_active_model",
+                "specialist_ensemble_switch_reason",
+                "specialist_ensemble_weight_info",
+            ]
+        ]
+        .drop_duplicates(subset=["Date"])
+        .rename(
+            columns={
+                "specialist_ensemble_active_model": "active_model",
+                "specialist_ensemble_switch_reason": "switch_reason",
+                "specialist_ensemble_weight_info": "weight_info",
+            }
+        )
+    )
     run_parameters_df.to_csv(output_dir / "run_parameters.csv", index=False)
     correlation_df.to_csv(output_dir / "model_prediction_correlation.csv")
     spearman_correlation_df.to_csv(output_dir / "model_prediction_rank_correlation.csv")
     top1_overlap_df.to_csv(output_dir / "top1_pick_overlap.csv")
+    model_switch_log_df.to_csv(output_dir / "model_switch_log.csv", index=False)
     model_diagnostics_df.to_csv(output_dir / "model_diagnostics.csv", index=False)
     ensemble_benefit_df.to_csv(output_dir / "ensemble_benefit.csv", index=False)
     leaderboard_df.to_csv(output_dir / "performance_summary.csv", index=False)
@@ -625,6 +669,9 @@ def run_pipeline(
             specialist_weight_lookback_days,
             rebalance_days,
             specialist_weighting_mode,
+            specialist_min_model_hold_days,
+            specialist_switch_margin_min_avg_ev,
+            specialist_switch_require_positive_ev,
             retrain_deterioration_lookback_days,
             retrain_deterioration_min_win_rate,
             retrain_deterioration_max_avg_ev,

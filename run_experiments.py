@@ -19,6 +19,9 @@ from src.config import (
     RETRAIN_DETERIORATION_MAX_AVG_EV,
     RETRAIN_DETERIORATION_MIN_WIN_RATE,
     SPECIALIST_ENSEMBLE_MEMBERS,
+    SPECIALIST_MIN_MODEL_HOLD_DAYS,
+    SPECIALIST_SWITCH_MARGIN_MIN_AVG_EV,
+    SPECIALIST_SWITCH_REQUIRE_POSITIVE_EV,
     SPECIALIST_WEIGHTING_MODE,
     SPECIALIST_WEIGHT_LOOKBACK_DAYS,
     STEP_DAYS,
@@ -138,6 +141,25 @@ def parse_args() -> argparse.Namespace:
         help="Trailing out-of-sample days used for dynamic specialist weights.",
     )
     parser.add_argument(
+        "--specialist-min-model-hold-days",
+        type=int,
+        default=SPECIALIST_MIN_MODEL_HOLD_DAYS,
+        help="Minimum days to keep the current sticky specialist before switching.",
+    )
+    parser.add_argument(
+        "--specialist-switch-margin-min-avg-ev",
+        type=float,
+        default=SPECIALIST_SWITCH_MARGIN_MIN_AVG_EV,
+        help="Minimum trailing avg ev_target margin required for sticky specialist switching.",
+    )
+    parser.add_argument(
+        "--specialist-switch-require-positive-ev",
+        type=str,
+        default=str(SPECIALIST_SWITCH_REQUIRE_POSITIVE_EV).lower(),
+        choices=["true", "false"],
+        help="Require the challenger sticky specialist to have positive trailing avg ev_target before switching.",
+    )
+    parser.add_argument(
         "--retrain-deterioration-lookback-days",
         type=int,
         default=RETRAIN_DETERIORATION_LOOKBACK_DAYS,
@@ -232,6 +254,9 @@ def main() -> None:
                 specialist_weighting_mode=args.specialist_weighting_mode,
                 specialist_ensemble_models=args.specialist_ensemble_members,
                 specialist_weight_lookback_days=args.specialist_weight_lookback_days,
+                specialist_min_model_hold_days=args.specialist_min_model_hold_days,
+                specialist_switch_margin_min_avg_ev=args.specialist_switch_margin_min_avg_ev,
+                specialist_switch_require_positive_ev=(args.specialist_switch_require_positive_ev == "true"),
                 retrain_deterioration_lookback_days=args.retrain_deterioration_lookback_days,
                 retrain_deterioration_min_win_rate=args.retrain_deterioration_min_win_rate,
                 retrain_deterioration_max_avg_ev=args.retrain_deterioration_max_avg_ev,

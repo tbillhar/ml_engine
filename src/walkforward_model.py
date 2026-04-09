@@ -18,6 +18,22 @@ PRIMARY_ENSEMBLE_WEIGHTS = {
     "rf": 0.15,
 }
 
+LIVE_MODEL_COLUMNS = {
+    "ensemble": "pred_ensemble",
+    "specialist_ensemble": "pred_specialist_ensemble",
+    "lgbm_deep": "pred_lgbm_deep",
+    "lgbm_deep_returns_momentum": "pred_lgbm_deep_returns_momentum",
+    "lgbm_deep_corr_regime": "pred_lgbm_deep_corr_regime",
+    "lgbm_deep_volatility": "pred_lgbm_deep_volatility",
+    "rf": "pred_rf",
+    "rf_returns_momentum": "pred_rf_returns_momentum",
+    "rf_corr_regime": "pred_rf_corr_regime",
+    "logreg": "pred_logreg",
+    "logreg_returns_momentum": "pred_logreg_returns_momentum",
+    "logreg_corr_regime": "pred_logreg_corr_regime",
+    "logreg_volatility": "pred_logreg_volatility",
+}
+
 META_COLUMNS = ["Date", "pair", "next_ret", "future_ret", "rel", "profit_target", "ev_target"]
 def make_xy(subdf: pd.DataFrame, date_list, feature_cols: list[str]):
     """Build sorted subset, design matrix, labels, and group sizes."""
@@ -242,30 +258,20 @@ def model_feature_subset_map(model_names: list[str]) -> dict[str, str]:
     return mapping
 
 
-def add_specialist_ensemble_scores(
-    test_sub: pd.DataFrame,
-    specialist_ensemble_models: list[str],
+def resolve_live_prediction_column(live_model: str) -> str:
+    """Map a user-facing live model name to its prediction column."""
+    if live_model not in LIVE_MODEL_COLUMNS:
+        raise ValueError(f"Unsupported LIVE_MODEL '{live_model}'. Expected one of: {sorted(LIVE_MODEL_COLUMNS)}")
+    return LIVE_MODEL_COLUMNS[live_model]
+
+
+def specialist_weights_from_history(
+    member_top1_returns: dict[str, list[float]],
+    ensemble_models: list[str],
     specialist_weight_lookback_days: int,
     specialist_weighting_mode: str,
-) -> pd.DataFrame:
-    """Build a rank-based Top-1 specialist ensemble under a chosen weighting mode."""
-    if len(specialist_ensemble_models) < 2:
-        raise ValueError("SPECIALIST_ENSEMBLE_MEMBERS must contain at least two model names")
-    ensemble_models = [f"pred_{name}" for name in specialist_ensemble_models]
-    missing = [col for col in ensemble_models if col not in test_sub.columns]
-    if missing:
-        raise ValueError(f"Missing specialist ensemble prediction columns: {missing}")
-
-    test_sub = test_sub.copy()
-    ranked_cols: dict[str, str] = {}
-    for model_col in ensemble_models:
-        ranked_col = f"{model_col}__rankpct"
-        ranked_cols[model_col] = ranked_col
-        test_sub[ranked_col] = test_sub.groupby("Date")[model_col].rank(method="average", pct=True)
-
-    date_order = sorted(test_sub["Date"].unique())
-    member_top1_returns: dict[str, list[float]] = {model_col: [] for model_col in ensemble_models}
-    member_weight_history: dict[str, list[float]] = {model_col: [] for model_col in ensemble_models}
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return current specialist ensemble weights and raw trailing scores."""
     equal_weight = 1.0 / len(ensemble_models)
 
     def softmax(values: np.ndarray) -> np.ndarray:
@@ -311,21 +317,125 @@ def add_specialist_ensemble_scores(
         clipped = np.clip(blended, 1e-9, max_weight)
         return clipped / clipped.sum()
 
-    for current_idx, current_date in enumerate(date_order):
-        history_start = max(0, current_idx - specialist_weight_lookback_days)
-        for model_col in ensemble_models:
-            history_slice = member_top1_returns[model_col][history_start:current_idx]
-            if history_slice:
-                avg_recent_return = float(np.mean(history_slice))
-                member_weight_history[model_col].append(avg_recent_return)
-            else:
-                member_weight_history[model_col].append(np.nan)
+    raw_scores = []
+    for model_col in ensemble_models:
+        history_slice = member_top1_returns[model_col][-specialist_weight_lookback_days:]
+        raw_scores.append(float(np.mean(history_slice)) if history_slice else np.nan)
+    raw_scores_arr = np.array(raw_scores, dtype=float)
+    return softened_weights(raw_scores_arr), raw_scores_arr
 
-        raw_weights = np.array(
-            [member_weight_history[model_col][-1] for model_col in ensemble_models],
-            dtype=float,
+
+def sticky_specialist_router_step(
+    raw_scores: np.ndarray,
+    ensemble_models: list[str],
+    previous_active_idx: int | None,
+    previous_hold_days: int,
+    specialist_min_model_hold_days: int,
+    specialist_switch_margin_min_avg_ev: float,
+    specialist_switch_require_positive_ev: bool,
+) -> tuple[np.ndarray, int | None, int, str]:
+    """Route to one active specialist with persistence and switching guards."""
+    equal_weight = 1.0 / len(ensemble_models)
+    if np.all(np.isnan(raw_scores)):
+        return np.full(len(ensemble_models), equal_weight), previous_active_idx, previous_hold_days, "no_history_equal"
+
+    filled = np.nan_to_num(raw_scores, nan=-np.inf)
+    leader_idx = int(np.argmax(filled))
+    leader_score = filled[leader_idx]
+
+    if previous_active_idx is None or previous_active_idx >= len(ensemble_models):
+        if specialist_switch_require_positive_ev and leader_score <= 0:
+            return np.full(len(ensemble_models), equal_weight), None, 0, "no_positive_leader_equal"
+        weights = np.zeros(len(ensemble_models), dtype=float)
+        weights[leader_idx] = 1.0
+        return weights, leader_idx, 1, "init_leader"
+
+    current_idx = previous_active_idx
+    current_score = filled[current_idx]
+    new_hold_days = previous_hold_days + 1
+
+    if leader_idx == current_idx:
+        weights = np.zeros(len(ensemble_models), dtype=float)
+        weights[current_idx] = 1.0
+        return weights, current_idx, new_hold_days, "stay_current_best"
+
+    if previous_hold_days < specialist_min_model_hold_days:
+        weights = np.zeros(len(ensemble_models), dtype=float)
+        weights[current_idx] = 1.0
+        return weights, current_idx, new_hold_days, "hold_lock"
+
+    if specialist_switch_require_positive_ev and leader_score <= 0:
+        weights = np.zeros(len(ensemble_models), dtype=float)
+        weights[current_idx] = 1.0
+        return weights, current_idx, new_hold_days, "no_positive_challenger"
+
+    if not np.isfinite(current_score):
+        current_score = -np.inf
+    if leader_score <= current_score + specialist_switch_margin_min_avg_ev:
+        weights = np.zeros(len(ensemble_models), dtype=float)
+        weights[current_idx] = 1.0
+        return weights, current_idx, new_hold_days, "margin_not_met"
+
+    weights = np.zeros(len(ensemble_models), dtype=float)
+    weights[leader_idx] = 1.0
+    return weights, leader_idx, 1, "switch_margin"
+
+
+def add_specialist_ensemble_scores(
+    test_sub: pd.DataFrame,
+    specialist_ensemble_models: list[str],
+    specialist_weight_lookback_days: int,
+    specialist_weighting_mode: str,
+    specialist_min_model_hold_days: int,
+    specialist_switch_margin_min_avg_ev: float,
+    specialist_switch_require_positive_ev: bool,
+) -> pd.DataFrame:
+    """Build a rank-based Top-1 specialist ensemble under a chosen weighting mode."""
+    if len(specialist_ensemble_models) < 2:
+        raise ValueError("SPECIALIST_ENSEMBLE_MEMBERS must contain at least two model names")
+    ensemble_models = [f"pred_{name}" for name in specialist_ensemble_models]
+    missing = [col for col in ensemble_models if col not in test_sub.columns]
+    if missing:
+        raise ValueError(f"Missing specialist ensemble prediction columns: {missing}")
+
+    test_sub = test_sub.copy()
+    ranked_cols: dict[str, str] = {}
+    for model_col in ensemble_models:
+        ranked_col = f"{model_col}__rankpct"
+        ranked_cols[model_col] = ranked_col
+        test_sub[ranked_col] = test_sub.groupby("Date")[model_col].rank(method="average", pct=True)
+
+    date_order = sorted(test_sub["Date"].unique())
+    member_top1_returns: dict[str, list[float]] = {model_col: [] for model_col in ensemble_models}
+    router_active_idx: int | None = None
+    router_hold_days = 0
+    test_sub["specialist_ensemble_active_model"] = ""
+    test_sub["specialist_ensemble_switch_reason"] = ""
+    test_sub["specialist_ensemble_weight_info"] = ""
+
+    for current_idx, current_date in enumerate(date_order):
+        normalized_weights, raw_scores = specialist_weights_from_history(
+            member_top1_returns=member_top1_returns,
+            ensemble_models=ensemble_models,
+            specialist_weight_lookback_days=specialist_weight_lookback_days,
+            specialist_weighting_mode=specialist_weighting_mode,
         )
-        normalized_weights = softened_weights(raw_weights)
+        switch_reason = "stateless_mode"
+        if specialist_weighting_mode == "sticky_winner":
+            (
+                normalized_weights,
+                router_active_idx,
+                router_hold_days,
+                switch_reason,
+            ) = sticky_specialist_router_step(
+                raw_scores=raw_scores,
+                ensemble_models=ensemble_models,
+                previous_active_idx=router_active_idx,
+                previous_hold_days=router_hold_days,
+                specialist_min_model_hold_days=specialist_min_model_hold_days,
+                specialist_switch_margin_min_avg_ev=specialist_switch_margin_min_avg_ev,
+                specialist_switch_require_positive_ev=specialist_switch_require_positive_ev,
+            )
 
         date_mask = test_sub["Date"] == current_date
         weighted_score = np.zeros(int(date_mask.sum()), dtype=float)
@@ -337,18 +447,13 @@ def add_specialist_ensemble_scores(
         for model_col in ensemble_models:
             chosen_row = date_slice.sort_values(model_col, ascending=False).iloc[0]
             member_top1_returns[model_col].append(float(chosen_row["ev_target"]))
-
-    test_sub["specialist_ensemble_weight_info"] = ""
-    for date_idx, current_date in enumerate(date_order):
+        active_model = ensemble_models[router_active_idx] if router_active_idx is not None else ""
+        test_sub.loc[date_mask, "specialist_ensemble_active_model"] = active_model
+        test_sub.loc[date_mask, "specialist_ensemble_switch_reason"] = switch_reason
         weight_parts = []
-        raw_weights = np.array(
-            [member_weight_history[model_col][date_idx] for model_col in ensemble_models],
-            dtype=float,
-        )
-        normalized_weights = softened_weights(raw_weights)
         for idx, model_col in enumerate(ensemble_models):
             weight_parts.append(f"{model_col}={normalized_weights[idx]:.3f}")
-        test_sub.loc[test_sub["Date"] == current_date, "specialist_ensemble_weight_info"] = "|".join(weight_parts)
+        test_sub.loc[date_mask, "specialist_ensemble_weight_info"] = "|".join(weight_parts)
 
     test_sub.drop(columns=list(ranked_cols.values()), inplace=True)
     return test_sub
@@ -362,6 +467,9 @@ def run_walkforward_model(
     specialist_weighting_mode: str,
     specialist_ensemble_models: list[str],
     specialist_weight_lookback_days: int,
+    specialist_min_model_hold_days: int,
+    specialist_switch_margin_min_avg_ev: float,
+    specialist_switch_require_positive_ev: bool,
     retrain_deterioration_lookback_days: int,
     retrain_deterioration_min_win_rate: float,
     retrain_deterioration_max_avg_ev: float,
@@ -377,6 +485,8 @@ def run_walkforward_model(
     subset_cols = feature_subset_columns(feature_cols)
     models = build_models()
     model_subsets = model_feature_subset_map(list(models))
+    live_pred_col = resolve_live_prediction_column(live_model)
+    specialist_prediction_cols = [f"pred_{name}" for name in specialist_ensemble_models]
 
     all_dates = sorted(long_df["Date"].unique())
     all_test_chunks = []
@@ -384,6 +494,11 @@ def run_walkforward_model(
     prediction_cols = [f"pred_{name}" for name in models]
     prediction_cols.append("pred_ensemble")
     primary_weights = primary_ensemble_weights(list(models))
+    global_specialist_top1_returns: dict[str, list[float]] = {
+        model_col: [] for model_col in specialist_prediction_cols
+    }
+    router_active_idx: int | None = None
+    router_hold_days = 0
     fit_start = 0
     window_idx = 0
     while fit_start + fit_days < len(all_dates):
@@ -424,11 +539,60 @@ def run_walkforward_model(
                 day_sub[f"pred_{model_name}"] * primary_weights[model_name]
                 for model_name in primary_weights
             )
+            specialist_weights, raw_scores = specialist_weights_from_history(
+                member_top1_returns=global_specialist_top1_returns,
+                ensemble_models=specialist_prediction_cols,
+                specialist_weight_lookback_days=specialist_weight_lookback_days,
+                specialist_weighting_mode=specialist_weighting_mode,
+            )
+            switch_reason = "stateless_mode"
+            if specialist_weighting_mode == "sticky_winner":
+                (
+                    specialist_weights,
+                    router_active_idx,
+                    router_hold_days,
+                    switch_reason,
+                ) = sticky_specialist_router_step(
+                    raw_scores=raw_scores,
+                    ensemble_models=specialist_prediction_cols,
+                    previous_active_idx=router_active_idx,
+                    previous_hold_days=router_hold_days,
+                    specialist_min_model_hold_days=specialist_min_model_hold_days,
+                    specialist_switch_margin_min_avg_ev=specialist_switch_margin_min_avg_ev,
+                    specialist_switch_require_positive_ev=specialist_switch_require_positive_ev,
+                )
+            specialist_rank_sum = np.zeros(len(day_sub), dtype=float)
+            for idx, model_col in enumerate(specialist_prediction_cols):
+                rank_pct = day_sub[model_col].rank(method="average", pct=True).to_numpy()
+                specialist_rank_sum += specialist_weights[idx] * rank_pct
+            day_sub["pred_specialist_ensemble"] = specialist_rank_sum
+            day_sub["specialist_ensemble_active_model"] = (
+                specialist_prediction_cols[router_active_idx] if router_active_idx is not None else ""
+            )
+            day_sub["specialist_ensemble_switch_reason"] = switch_reason
+            day_sub["specialist_ensemble_weight_info"] = "|".join(
+                f"{model_col}={specialist_weights[idx]:.3f}"
+                for idx, model_col in enumerate(specialist_prediction_cols)
+            )
             day_sub["window_id"] = window_idx
-            current_test_chunks.append(day_sub[["window_id", *META_COLUMNS, *prediction_cols]])
+            current_test_chunks.append(
+                day_sub[
+                    [
+                        "window_id",
+                        *META_COLUMNS,
+                        *prediction_cols,
+                        "specialist_ensemble_active_model",
+                        "specialist_ensemble_switch_reason",
+                        "specialist_ensemble_weight_info",
+                    ]
+                ]
+            )
 
-            trigger_row = day_sub.sort_values("pred_ensemble", ascending=False).iloc[0]
+            trigger_row = day_sub.sort_values(live_pred_col, ascending=False).iloc[0]
             trigger_returns.append(float(trigger_row["ev_target"]))
+            for model_col in specialist_prediction_cols:
+                chosen_row = day_sub.sort_values(model_col, ascending=False).iloc[0]
+                global_specialist_top1_returns[model_col].append(float(chosen_row["ev_target"]))
             days_into_test += 1
             next_date_idx += 1
 
@@ -459,7 +623,10 @@ def run_walkforward_model(
             + ", ".join(specialist_ensemble_models)
             + (
                 f" via daily rank averaging with weighting_mode={specialist_weighting_mode} "
-                f"and trailing lookback={specialist_weight_lookback_days}"
+                f"and trailing lookback={specialist_weight_lookback_days}; "
+                f"min_hold_days={specialist_min_model_hold_days}; "
+                f"switch_margin_min_avg_ev={specialist_switch_margin_min_avg_ev}; "
+                f"require_positive_ev={specialist_switch_require_positive_ev}"
             )
         )
         log(
@@ -516,6 +683,9 @@ def run_walkforward_model(
         specialist_ensemble_models,
         specialist_weight_lookback_days,
         specialist_weighting_mode,
+        specialist_min_model_hold_days,
+        specialist_switch_margin_min_avg_ev,
+        specialist_switch_require_positive_ev,
     )
     window_diag_df = pd.DataFrame(window_diagnostics)
     return pred_df, window_diag_df
