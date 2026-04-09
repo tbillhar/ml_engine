@@ -54,7 +54,6 @@ from src.config import (
     SPECIALIST_WEIGHTING_MODE,
     SPECIALIST_WEIGHT_LOOKBACK_DAYS,
     STEP_DAYS,
-    TEST_DAYS,
     TRADING_DAYS_PER_YEAR,
     TRANSACTION_LOSS_PCT,
 )
@@ -75,7 +74,6 @@ class PipelineWorker(QObject):
         self,
         csv_path: str,
         fit_days: int,
-        test_days: int,
         step_days: int,
         rebalance_days: int,
         horizon: int,
@@ -94,7 +92,6 @@ class PipelineWorker(QObject):
         super().__init__()
         self.csv_path = csv_path
         self.fit_days = fit_days
-        self.test_days = test_days
         self.step_days = step_days
         self.rebalance_days = rebalance_days
         self.horizon = horizon
@@ -115,7 +112,6 @@ class PipelineWorker(QObject):
             stats_df, plot_path, heatmap_path, diagnostics_summary = run_pipeline(
                 csv_path=self.csv_path,
                 fit_days=self.fit_days,
-                test_days=self.test_days,
                 step_days=self.step_days,
                 rebalance_days=self.rebalance_days,
                 horizon=self.horizon,
@@ -212,7 +208,6 @@ class FXPipelineWindow(QMainWindow):
         self.build_features_btn.clicked.connect(self.start_feature_build)
 
         self.fit_input = QLineEdit(str(FIT_DAYS))
-        self.test_input = QLineEdit(str(TEST_DAYS))
         self.step_input = QLineEdit(str(STEP_DAYS))
         self.rebalance_input = QLineEdit(str(REBALANCE_DAYS))
         self.horizon_input = QLineEdit(str(HORIZON))
@@ -317,7 +312,6 @@ class FXPipelineWindow(QMainWindow):
 
         params_form = QFormLayout()
         params_form.addRow("FIT_DAYS", self.fit_input)
-        params_form.addRow("TEST_DAYS", self.test_input)
         params_form.addRow("STEP_DAYS", self.step_input)
         params_form.addRow("REBALANCE_DAYS", self.rebalance_input)
         params_form.addRow("HORIZON", self.horizon_input)
@@ -498,7 +492,6 @@ class FXPipelineWindow(QMainWindow):
                 raise ValueError(f"CSV file does not exist: {csv_path}")
 
             fit_days = self._read_int(self.fit_input, "FIT_DAYS")
-            test_days = self._read_int(self.test_input, "TEST_DAYS")
             step_days = self._read_int(self.step_input, "STEP_DAYS")
             rebalance_days = self._read_int(self.rebalance_input, "REBALANCE_DAYS")
             horizon = self._read_int(self.horizon_input, "HORIZON")
@@ -561,7 +554,6 @@ class FXPipelineWindow(QMainWindow):
         self.pipeline_worker = PipelineWorker(
             csv_path=csv_path,
             fit_days=fit_days,
-            test_days=test_days,
             step_days=step_days,
             rebalance_days=rebalance_days,
             horizon=horizon,

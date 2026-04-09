@@ -22,7 +22,6 @@ from src.config import (
     SPECIALIST_WEIGHTING_MODE,
     SPECIALIST_WEIGHT_LOOKBACK_DAYS,
     STEP_DAYS,
-    TEST_DAYS,
     TRADING_DAYS_PER_YEAR,
     TRANSACTION_LOSS_PCT,
 )
@@ -49,13 +48,6 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=[FIT_DAYS],
         help="One or more FIT_DAYS values.",
-    )
-    parser.add_argument(
-        "--test-days",
-        nargs="+",
-        type=int,
-        default=[TEST_DAYS],
-        help="One or more TEST_DAYS values.",
     )
     parser.add_argument(
         "--step-days",
@@ -169,7 +161,6 @@ def parse_args() -> argparse.Namespace:
 def format_run_name(params: dict[str, int | float]) -> str:
     return (
         f"fit{params['fit_days']}_"
-        f"test{params['test_days']}_"
         f"step{params['step_days']}_"
         f"reb{params['rebalance_days']}_"
         f"h{params['horizon']}_"
@@ -193,7 +184,6 @@ def main() -> None:
     combos = list(
         itertools.product(
             args.fit_days,
-            args.test_days,
             args.step_days,
             args.rebalance_days,
             args.horizon,
@@ -212,15 +202,14 @@ def main() -> None:
     for idx, combo in enumerate(combos, start=1):
         params = {
             "fit_days": combo[0],
-            "test_days": combo[1],
-            "step_days": combo[2],
-            "rebalance_days": combo[3],
-            "horizon": combo[4],
-            "transaction_loss_pct": combo[5],
-            "trading_days_per_year": combo[6],
-            "holdout_days": combo[7],
-            "live_model": combo[8],
-            "live_decision_mode": combo[9],
+            "step_days": combo[1],
+            "rebalance_days": combo[2],
+            "horizon": combo[3],
+            "transaction_loss_pct": combo[4],
+            "trading_days_per_year": combo[5],
+            "holdout_days": combo[6],
+            "live_model": combo[7],
+            "live_decision_mode": combo[8],
         }
         run_name = format_run_name(params)
         run_dir = results_dir / run_name
@@ -233,7 +222,6 @@ def main() -> None:
             stats_df, plot_path, _, _ = run_pipeline(
                 csv_path=str(csv_path),
                 fit_days=params["fit_days"],
-                test_days=params["test_days"],
                 step_days=params["step_days"],
                 rebalance_days=params["rebalance_days"],
                 horizon=params["horizon"],

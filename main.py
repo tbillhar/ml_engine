@@ -15,7 +15,6 @@ from src.config import (
     SPECIALIST_WEIGHTING_MODE,
     SPECIALIST_WEIGHT_LOOKBACK_DAYS,
     STEP_DAYS,
-    TEST_DAYS,
     TRADING_DAYS_PER_YEAR,
     TRANSACTION_LOSS_PCT,
 )
@@ -28,7 +27,6 @@ def main() -> None:
     stats_df, _, _, diagnostics_summary = run_pipeline(
         csv_path=csv_path,
         fit_days=FIT_DAYS,
-        test_days=TEST_DAYS,
         step_days=STEP_DAYS,
         rebalance_days=REBALANCE_DAYS,
         horizon=HORIZON,

@@ -1,7 +1,6 @@
 """Central configuration for FX walk-forward pipeline."""
 
 FIT_DAYS = 480
-TEST_DAYS = 30
 STEP_DAYS = 30
 REBALANCE_DAYS = 1
 HORIZON = 5

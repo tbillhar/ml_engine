@@ -19,17 +19,6 @@ PRIMARY_ENSEMBLE_WEIGHTS = {
 }
 
 META_COLUMNS = ["Date", "pair", "next_ret", "future_ret", "rel", "profit_target", "ev_target"]
-
-
-def sliding_windows(dates, fit_len: int, test_len: int, step: int):
-    """Yield (fit_dates, test_dates) for rolling windows."""
-    n = len(dates)
-    for start in range(0, n - fit_len - test_len + 1, step):
-        fit_dates = dates[start:start + fit_len]
-        test_dates = dates[start + fit_len:start + fit_len + test_len]
-        yield fit_dates, test_dates
-
-
 def make_xy(subdf: pd.DataFrame, date_list, feature_cols: list[str]):
     """Build sorted subset, design matrix, labels, and group sizes."""
     s = subdf[subdf["Date"].isin(date_list)].sort_values(["Date", "pair"])
@@ -368,7 +357,6 @@ def add_specialist_ensemble_scores(
 def run_walkforward_model(
     long_df: pd.DataFrame,
     fit_days: int,
-    test_days: int,
     step_days: int,
     live_model: str,
     specialist_weighting_mode: str,
@@ -404,7 +392,7 @@ def run_walkforward_model(
         window_idx += 1
         log(
             f"Training window {window_idx} "
-            f"(fit dates: {len(fit_dates)}, max test dates: {test_days}, cadence step: {step_days}, "
+            f"(fit dates: {len(fit_dates)}, cadence step: {step_days}, "
             f"live model: {live_model})"
         )
         fitted_models: dict[str, object] = {}
@@ -425,7 +413,7 @@ def run_walkforward_model(
         retrain_reason = "end_of_data"
         next_date_idx = fit_start + fit_days
 
-        while next_date_idx < len(all_dates) and days_into_test < test_days:
+        while next_date_idx < len(all_dates):
             current_date = all_dates[next_date_idx]
             day_sub = long_df[long_df["Date"] == current_date].sort_values(["Date", "pair"]).copy()
             for model_name, model in fitted_models.items():
@@ -444,9 +432,6 @@ def run_walkforward_model(
             days_into_test += 1
             next_date_idx += 1
 
-            if days_into_test >= test_days:
-                retrain_reason = "test_days_cap"
-                break
             if days_into_test >= step_days:
                 retrain_reason = "cadence_step_days"
                 break

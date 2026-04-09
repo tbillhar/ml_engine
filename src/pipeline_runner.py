@@ -447,7 +447,6 @@ def build_diagnostics_summary(
 def run_pipeline(
     csv_path: str,
     fit_days: int,
-    test_days: int,
     step_days: int,
     rebalance_days: int,
     horizon: int,
@@ -498,7 +497,7 @@ def run_pipeline(
 
     log(
         "Running walk-forward models "
-        f"(fit={fit_days}, test={test_days}, "
+        f"(fit={fit_days}, "
         f"step={step_days}, rebalance_days={rebalance_days}, holdout_days={holdout_days}, "
         f"live_model={live_model}, live_decision_mode=top1, "
         f"specialist_weighting_mode={specialist_weighting_mode}, "
@@ -512,7 +511,6 @@ def run_pipeline(
     pred_df, window_diag_df = run_walkforward_model(
         long_df,
         fit_days=fit_days,
-        test_days=test_days,
         step_days=step_days,
         live_model=live_model,
         specialist_weighting_mode=specialist_weighting_mode,
@@ -592,7 +590,6 @@ def run_pipeline(
             {
                 "csv_path": csv_path,
                 "fit_days": fit_days,
-                "test_days": test_days,
                 "step_days": step_days,
                 "rebalance_days": rebalance_days,
                 "horizon": horizon,
