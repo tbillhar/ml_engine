@@ -15,7 +15,11 @@ from src.config import (
     HOLDOUT_DAYS,
     LIVE_MODEL,
     REBALANCE_DAYS,
+    RETRAIN_DETERIORATION_LOOKBACK_DAYS,
+    RETRAIN_DETERIORATION_MAX_AVG_EV,
+    RETRAIN_DETERIORATION_MIN_WIN_RATE,
     SPECIALIST_ENSEMBLE_MEMBERS,
+    SPECIALIST_WEIGHTING_MODE,
     SPECIALIST_WEIGHT_LOOKBACK_DAYS,
     STEP_DAYS,
     TEST_DAYS,
@@ -130,10 +134,34 @@ def parse_args() -> argparse.Namespace:
         help="Model names to combine in the rank-based specialist ensemble.",
     )
     parser.add_argument(
+        "--specialist-weighting-mode",
+        default=SPECIALIST_WEIGHTING_MODE,
+        choices=["equal", "soft_dynamic", "winner_take_all", "winner_take_most"],
+        help="Weighting mode for the specialist ensemble.",
+    )
+    parser.add_argument(
         "--specialist-weight-lookback-days",
         type=int,
         default=SPECIALIST_WEIGHT_LOOKBACK_DAYS,
         help="Trailing out-of-sample days used for dynamic specialist weights.",
+    )
+    parser.add_argument(
+        "--retrain-deterioration-lookback-days",
+        type=int,
+        default=RETRAIN_DETERIORATION_LOOKBACK_DAYS,
+        help="Current-window out-of-sample lookback used for early retrain checks.",
+    )
+    parser.add_argument(
+        "--retrain-deterioration-min-win-rate",
+        type=float,
+        default=RETRAIN_DETERIORATION_MIN_WIN_RATE,
+        help="Early retrain trigger when trailing Top-1 win rate is at or below this value.",
+    )
+    parser.add_argument(
+        "--retrain-deterioration-max-avg-ev",
+        type=float,
+        default=RETRAIN_DETERIORATION_MAX_AVG_EV,
+        help="Early retrain trigger when trailing Top-1 average ev_target is at or below this value.",
     )
     return parser.parse_args()
 
@@ -213,8 +241,12 @@ def main() -> None:
                 trading_days_per_year=params["trading_days_per_year"],
                 holdout_days=params["holdout_days"],
                 live_model=params["live_model"],
+                specialist_weighting_mode=args.specialist_weighting_mode,
                 specialist_ensemble_models=args.specialist_ensemble_members,
                 specialist_weight_lookback_days=args.specialist_weight_lookback_days,
+                retrain_deterioration_lookback_days=args.retrain_deterioration_lookback_days,
+                retrain_deterioration_min_win_rate=args.retrain_deterioration_min_win_rate,
+                retrain_deterioration_max_avg_ev=args.retrain_deterioration_max_avg_ev,
                 output_dir=run_dir,
                 log_fn=log,
             )

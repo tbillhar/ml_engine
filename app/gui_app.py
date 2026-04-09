@@ -47,7 +47,11 @@ from src.config import (
     LIVE_MODEL,
     REBALANCE_DAYS,
     RAW_DATA_FILENAME,
+    RETRAIN_DETERIORATION_LOOKBACK_DAYS,
+    RETRAIN_DETERIORATION_MAX_AVG_EV,
+    RETRAIN_DETERIORATION_MIN_WIN_RATE,
     SPECIALIST_ENSEMBLE_MEMBERS,
+    SPECIALIST_WEIGHTING_MODE,
     SPECIALIST_WEIGHT_LOOKBACK_DAYS,
     STEP_DAYS,
     TEST_DAYS,
@@ -79,8 +83,12 @@ class PipelineWorker(QObject):
         trading_days_per_year: int,
         holdout_days: int,
         live_model: str,
+        specialist_weighting_mode: str,
         specialist_ensemble_members: list[str],
         specialist_weight_lookback_days: int,
+        retrain_deterioration_lookback_days: int,
+        retrain_deterioration_min_win_rate: float,
+        retrain_deterioration_max_avg_ev: float,
         output_dir: Path,
     ) -> None:
         super().__init__()
@@ -94,8 +102,12 @@ class PipelineWorker(QObject):
         self.trading_days_per_year = trading_days_per_year
         self.holdout_days = holdout_days
         self.live_model = live_model
+        self.specialist_weighting_mode = specialist_weighting_mode
         self.specialist_ensemble_members = specialist_ensemble_members
         self.specialist_weight_lookback_days = specialist_weight_lookback_days
+        self.retrain_deterioration_lookback_days = retrain_deterioration_lookback_days
+        self.retrain_deterioration_min_win_rate = retrain_deterioration_min_win_rate
+        self.retrain_deterioration_max_avg_ev = retrain_deterioration_max_avg_ev
         self.output_dir = output_dir
 
     def run(self) -> None:
@@ -111,8 +123,12 @@ class PipelineWorker(QObject):
                 trading_days_per_year=self.trading_days_per_year,
                 holdout_days=self.holdout_days,
                 live_model=self.live_model,
+                specialist_weighting_mode=self.specialist_weighting_mode,
                 specialist_ensemble_models=self.specialist_ensemble_members,
                 specialist_weight_lookback_days=self.specialist_weight_lookback_days,
+                retrain_deterioration_lookback_days=self.retrain_deterioration_lookback_days,
+                retrain_deterioration_min_win_rate=self.retrain_deterioration_min_win_rate,
+                retrain_deterioration_max_avg_ev=self.retrain_deterioration_max_avg_ev,
                 output_dir=self.output_dir,
                 log_fn=self.log.emit,
                 progress_fn=self.progress.emit,
@@ -203,8 +219,16 @@ class FXPipelineWindow(QMainWindow):
         self.transaction_loss_input = QLineEdit(str(TRANSACTION_LOSS_PCT))
         self.trading_days_input = QLineEdit(str(TRADING_DAYS_PER_YEAR))
         self.holdout_days_input = QLineEdit(str(HOLDOUT_DAYS))
+        self.specialist_weighting_mode_input = QComboBox()
+        self.specialist_weighting_mode_input.addItems(
+            ["equal", "soft_dynamic", "winner_take_all", "winner_take_most"]
+        )
+        self.specialist_weighting_mode_input.setCurrentText(SPECIALIST_WEIGHTING_MODE)
         self.specialist_members_input = QLineEdit(",".join(SPECIALIST_ENSEMBLE_MEMBERS))
         self.specialist_lookback_input = QLineEdit(str(SPECIALIST_WEIGHT_LOOKBACK_DAYS))
+        self.retrain_lookback_input = QLineEdit(str(RETRAIN_DETERIORATION_LOOKBACK_DAYS))
+        self.retrain_win_rate_input = QLineEdit(str(RETRAIN_DETERIORATION_MIN_WIN_RATE))
+        self.retrain_avg_ev_input = QLineEdit(str(RETRAIN_DETERIORATION_MAX_AVG_EV))
         self.live_model_input = QComboBox()
         self.live_model_input.addItems(
             [
@@ -267,6 +291,10 @@ class FXPipelineWindow(QMainWindow):
                 SPECIALIST_ENSEMBLE_MEMBERS,
                 SPECIALIST_WEIGHT_LOOKBACK_DAYS,
                 REBALANCE_DAYS,
+                SPECIALIST_WEIGHTING_MODE,
+                RETRAIN_DETERIORATION_LOOKBACK_DAYS,
+                RETRAIN_DETERIORATION_MIN_WIN_RATE,
+                RETRAIN_DETERIORATION_MAX_AVG_EV,
             )
         )
 
@@ -296,8 +324,12 @@ class FXPipelineWindow(QMainWindow):
         params_form.addRow("TRANSACTION_LOSS_PCT", self.transaction_loss_input)
         params_form.addRow("TRADING_DAYS_PER_YEAR", self.trading_days_input)
         params_form.addRow("HOLDOUT_DAYS", self.holdout_days_input)
+        params_form.addRow("SPECIALIST_WEIGHTING_MODE", self.specialist_weighting_mode_input)
         params_form.addRow("SPECIALIST_ENSEMBLE_MEMBERS", self.specialist_members_input)
         params_form.addRow("SPECIALIST_WEIGHT_LOOKBACK_DAYS", self.specialist_lookback_input)
+        params_form.addRow("RETRAIN_DET_LOOKBACK_DAYS", self.retrain_lookback_input)
+        params_form.addRow("RETRAIN_DET_MIN_WIN_RATE", self.retrain_win_rate_input)
+        params_form.addRow("RETRAIN_DET_MAX_AVG_EV", self.retrain_avg_ev_input)
         params_form.addRow("LIVE_MODEL", self.live_model_input)
 
         action_row = QHBoxLayout()
@@ -480,10 +512,20 @@ class FXPipelineWindow(QMainWindow):
             )
             holdout_days = self._read_int(self.holdout_days_input, "HOLDOUT_DAYS")
             live_model = self.live_model_input.currentText().strip()
+            specialist_weighting_mode = self.specialist_weighting_mode_input.currentText().strip()
             specialist_weight_lookback_days = self._read_int(
                 self.specialist_lookback_input,
                 "SPECIALIST_WEIGHT_LOOKBACK_DAYS",
             )
+            retrain_deterioration_lookback_days = self._read_int(
+                self.retrain_lookback_input,
+                "RETRAIN_DETERIORATION_LOOKBACK_DAYS",
+            )
+            retrain_deterioration_min_win_rate = self._read_nonnegative_float(
+                self.retrain_win_rate_input,
+                "RETRAIN_DETERIORATION_MIN_WIN_RATE",
+            )
+            retrain_deterioration_max_avg_ev = float(self.retrain_avg_ev_input.text().strip())
             specialist_ensemble_members = [
                 item.strip()
                 for item in self.specialist_members_input.text().split(",")
@@ -507,6 +549,10 @@ class FXPipelineWindow(QMainWindow):
                 specialist_ensemble_members,
                 specialist_weight_lookback_days,
                 rebalance_days,
+                specialist_weighting_mode,
+                retrain_deterioration_lookback_days,
+                retrain_deterioration_min_win_rate,
+                retrain_deterioration_max_avg_ev,
             )
         )
         self.append_log("Starting pipeline...")
@@ -523,8 +569,12 @@ class FXPipelineWindow(QMainWindow):
             trading_days_per_year=trading_days_per_year,
             holdout_days=holdout_days,
             live_model=live_model,
+            specialist_weighting_mode=specialist_weighting_mode,
             specialist_ensemble_members=specialist_ensemble_members,
             specialist_weight_lookback_days=specialist_weight_lookback_days,
+            retrain_deterioration_lookback_days=retrain_deterioration_lookback_days,
+            retrain_deterioration_min_win_rate=retrain_deterioration_min_win_rate,
+            retrain_deterioration_max_avg_ev=retrain_deterioration_max_avg_ev,
             output_dir=self.output_dir,
         )
         self.pipeline_worker.moveToThread(self.pipeline_thread)

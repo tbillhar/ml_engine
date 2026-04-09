@@ -144,6 +144,10 @@ def diagnostics_guide_text(
     specialist_ensemble_models: list[str] | None = None,
     specialist_weight_lookback_days: int | None = None,
     rebalance_days: int | None = None,
+    specialist_weighting_mode: str | None = None,
+    retrain_deterioration_lookback_days: int | None = None,
+    retrain_deterioration_min_win_rate: float | None = None,
+    retrain_deterioration_max_avg_ev: float | None = None,
 ) -> str:
     """Return a concise guide to the main diagnostics and ensemble construction."""
     specialist_text = (
@@ -157,6 +161,22 @@ def diagnostics_guide_text(
         else "configured lookback"
     )
     rebalance_text = str(rebalance_days) if rebalance_days is not None else "configured rebalance"
+    weighting_mode_text = specialist_weighting_mode or "configured weighting mode"
+    deterioration_lookback_text = (
+        str(retrain_deterioration_lookback_days)
+        if retrain_deterioration_lookback_days is not None
+        else "configured deterioration lookback"
+    )
+    deterioration_win_rate_text = (
+        f"{retrain_deterioration_min_win_rate:.2f}"
+        if retrain_deterioration_min_win_rate is not None
+        else "configured deterioration win-rate"
+    )
+    deterioration_avg_ev_text = (
+        f"{retrain_deterioration_max_avg_ev:.6f}"
+        if retrain_deterioration_max_avg_ev is not None
+        else "configured deterioration avg-ev"
+    )
     return "\n".join(
         [
             "Pipeline behavior",
@@ -177,9 +197,15 @@ def diagnostics_guide_text(
             "- pred_ensemble: fixed-weight broad blend of lgbm_deep, logreg, and rf scores.",
             (
                 f"- pred_specialist_ensemble: daily rank-percentile blend of {specialist_text}, "
-                f"weighted by trailing realized Top-1 success over the prior {lookback_text} out-of-sample dates."
+                f"weighted by trailing realized Top-1 success over the prior {lookback_text} out-of-sample dates "
+                f"using '{weighting_mode_text}' mode."
             ),
             f"- Rebalancing: Top-1 strategies rebalance every {rebalance_text} day(s).",
+            (
+                "- Retraining: models retrain on cadence or earlier if current-window broad-ensemble Top-1 "
+                f"performance over the last {deterioration_lookback_text} out-of-sample days has "
+                f"win rate <= {deterioration_win_rate_text} and avg ev_target <= {deterioration_avg_ev_text}."
+            ),
             "",
             "Interpretation",
             "- Scores are ranking signals, not calibrated probabilities.",
@@ -429,8 +455,12 @@ def run_pipeline(
     trading_days_per_year: int,
     holdout_days: int,
     live_model: str,
+    specialist_weighting_mode: str,
     specialist_ensemble_models: list[str],
     specialist_weight_lookback_days: int,
+    retrain_deterioration_lookback_days: int,
+    retrain_deterioration_min_win_rate: float,
+    retrain_deterioration_max_avg_ev: float,
     output_dir: Path,
     log_fn: LogFn = None,
     progress_fn: ProgressFn = None,
@@ -471,8 +501,12 @@ def run_pipeline(
         f"(fit={fit_days}, test={test_days}, "
         f"step={step_days}, rebalance_days={rebalance_days}, holdout_days={holdout_days}, "
         f"live_model={live_model}, live_decision_mode=top1, "
+        f"specialist_weighting_mode={specialist_weighting_mode}, "
         f"specialist_ensemble_members={','.join(specialist_ensemble_models)}, "
-        f"specialist_weight_lookback_days={specialist_weight_lookback_days})"
+        f"specialist_weight_lookback_days={specialist_weight_lookback_days}, "
+        f"retrain_det_lookback_days={retrain_deterioration_lookback_days}, "
+        f"retrain_det_min_win_rate={retrain_deterioration_min_win_rate}, "
+        f"retrain_det_max_avg_ev={retrain_deterioration_max_avg_ev})"
     )
     set_progress(60)
     pred_df, window_diag_df = run_walkforward_model(
@@ -480,8 +514,13 @@ def run_pipeline(
         fit_days=fit_days,
         test_days=test_days,
         step_days=step_days,
+        live_model=live_model,
+        specialist_weighting_mode=specialist_weighting_mode,
         specialist_ensemble_models=specialist_ensemble_models,
         specialist_weight_lookback_days=specialist_weight_lookback_days,
+        retrain_deterioration_lookback_days=retrain_deterioration_lookback_days,
+        retrain_deterioration_min_win_rate=retrain_deterioration_min_win_rate,
+        retrain_deterioration_max_avg_ev=retrain_deterioration_max_avg_ev,
         log_fn=log,
     )
 
@@ -563,8 +602,12 @@ def run_pipeline(
                 "live_model": live_model,
                 "live_decision_mode": "top1",
                 "live_prediction_column": live_pred_col,
+                "specialist_weighting_mode": specialist_weighting_mode,
                 "specialist_ensemble_members": "|".join(specialist_ensemble_models),
                 "specialist_weight_lookback_days": specialist_weight_lookback_days,
+                "retrain_deterioration_lookback_days": retrain_deterioration_lookback_days,
+                "retrain_deterioration_min_win_rate": retrain_deterioration_min_win_rate,
+                "retrain_deterioration_max_avg_ev": retrain_deterioration_max_avg_ev,
                 "research_test_dates": int(research_pred_df["Date"].nunique()),
                 "holdout_test_dates": int(holdout_pred_df["Date"].nunique()),
             }
@@ -584,6 +627,10 @@ def run_pipeline(
             specialist_ensemble_models,
             specialist_weight_lookback_days,
             rebalance_days,
+            specialist_weighting_mode,
+            retrain_deterioration_lookback_days,
+            retrain_deterioration_min_win_rate,
+            retrain_deterioration_max_avg_ev,
         ),
         encoding="utf-8",
     )

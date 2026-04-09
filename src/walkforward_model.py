@@ -257,8 +257,9 @@ def add_specialist_ensemble_scores(
     test_sub: pd.DataFrame,
     specialist_ensemble_models: list[str],
     specialist_weight_lookback_days: int,
+    specialist_weighting_mode: str,
 ) -> pd.DataFrame:
-    """Build a softened dynamically weighted Top-1 specialist ensemble."""
+    """Build a rank-based Top-1 specialist ensemble under a chosen weighting mode."""
     if len(specialist_ensemble_models) < 2:
         raise ValueError("SPECIALIST_ENSEMBLE_MEMBERS must contain at least two model names")
     ensemble_models = [f"pred_{name}" for name in specialist_ensemble_models]
@@ -287,6 +288,32 @@ def add_specialist_ensemble_scores(
         if np.all(np.isnan(raw_scores)):
             return np.full(len(ensemble_models), equal_weight)
         filled = np.nan_to_num(raw_scores, nan=0.0)
+        if specialist_weighting_mode == "equal":
+            return np.full(len(ensemble_models), equal_weight)
+        if specialist_weighting_mode == "winner_take_all":
+            winner_idx = int(np.argmax(filled))
+            weights = np.zeros(len(ensemble_models), dtype=float)
+            weights[winner_idx] = 1.0
+            return weights
+        if specialist_weighting_mode == "winner_take_most":
+            winner_idx = int(np.argmax(filled))
+            winner_weight = 0.70
+            remainder = 1.0 - winner_weight
+            weights = np.full(
+                len(ensemble_models),
+                remainder / max(len(ensemble_models) - 1, 1),
+                dtype=float,
+            )
+            weights[winner_idx] = winner_weight
+            if len(ensemble_models) == 1:
+                weights[winner_idx] = 1.0
+            return weights / weights.sum()
+        if specialist_weighting_mode != "soft_dynamic":
+            raise ValueError(
+                "Unsupported SPECIALIST_WEIGHTING_MODE "
+                f"'{specialist_weighting_mode}'. Expected one of: "
+                "equal, soft_dynamic, winner_take_all, winner_take_most"
+            )
         centered = filled - filled.mean()
         scale = max(float(np.std(centered)), 1e-4)
         dynamic = softmax(centered / scale)
@@ -343,8 +370,13 @@ def run_walkforward_model(
     fit_days: int,
     test_days: int,
     step_days: int,
+    live_model: str,
+    specialist_weighting_mode: str,
     specialist_ensemble_models: list[str],
     specialist_weight_lookback_days: int,
+    retrain_deterioration_lookback_days: int,
+    retrain_deterioration_min_win_rate: float,
+    retrain_deterioration_max_avg_ev: float,
     log_fn=None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Run walk-forward classifiers and return predictions and window diagnostics."""
@@ -361,19 +393,21 @@ def run_walkforward_model(
     all_dates = sorted(long_df["Date"].unique())
     all_test_chunks = []
     window_diagnostics = []
-    window_splits = list(sliding_windows(all_dates, fit_days, test_days, step_days))
     prediction_cols = [f"pred_{name}" for name in models]
     prediction_cols.append("pred_ensemble")
-
-    for window_idx, (fit_dates, test_dates) in enumerate(window_splits, start=1):
+    primary_weights = primary_ensemble_weights(list(models))
+    fit_start = 0
+    window_idx = 0
+    while fit_start + fit_days < len(all_dates):
+        fit_dates = all_dates[fit_start:fit_start + fit_days]
         train_sub, _, y_train, _ = make_xy(long_df, fit_dates, feature_cols)
-        test_sub, _, _, _ = make_xy(long_df, test_dates, feature_cols)
+        window_idx += 1
         log(
-            f"Training window {window_idx}/{len(window_splits)} "
-            f"(fit dates: {len(fit_dates)}, test dates: {len(test_dates)})"
+            f"Training window {window_idx} "
+            f"(fit dates: {len(fit_dates)}, max test dates: {test_days}, cadence step: {step_days}, "
+            f"live model: {live_model})"
         )
-
-        test_sub = test_sub.copy()
+        fitted_models: dict[str, object] = {}
         for model_name, base_model in models.items():
             subset_name = model_subsets[model_name]
             model_feature_cols = subset_cols[subset_name]
@@ -381,22 +415,56 @@ def run_walkforward_model(
                 raise ValueError(f"Feature subset '{subset_name}' for model '{model_name}' is empty")
             model = clone(base_model)
             model.fit(train_sub[model_feature_cols], y_train)
-            test_sub[f"pred_{model_name}"] = predict_positive_scores(model, test_sub[model_feature_cols])
-            window_diagnostics.append(
-                {
-                    "window_id": window_idx,
-                    "model": model_name,
-                    "fit_dates": len(fit_dates),
-                    "test_dates": len(test_dates),
-                    "feature_subset": subset_name,
-                }
-            )
+            fitted_models[model_name] = model
 
-        primary_weights = primary_ensemble_weights(list(models))
-        test_sub["pred_ensemble"] = sum(
-            test_sub[f"pred_{model_name}"] * primary_weights[model_name]
-            for model_name in primary_weights
-        )
+        current_test_chunks = []
+        trigger_returns: list[float] = []
+        days_into_test = 0
+        trigger_avg_ev = np.nan
+        trigger_win_rate = np.nan
+        retrain_reason = "end_of_data"
+        next_date_idx = fit_start + fit_days
+
+        while next_date_idx < len(all_dates) and days_into_test < test_days:
+            current_date = all_dates[next_date_idx]
+            day_sub = long_df[long_df["Date"] == current_date].sort_values(["Date", "pair"]).copy()
+            for model_name, model in fitted_models.items():
+                subset_name = model_subsets[model_name]
+                model_feature_cols = subset_cols[subset_name]
+                day_sub[f"pred_{model_name}"] = predict_positive_scores(model, day_sub[model_feature_cols])
+            day_sub["pred_ensemble"] = sum(
+                day_sub[f"pred_{model_name}"] * primary_weights[model_name]
+                for model_name in primary_weights
+            )
+            day_sub["window_id"] = window_idx
+            current_test_chunks.append(day_sub[["window_id", *META_COLUMNS, *prediction_cols]])
+
+            trigger_row = day_sub.sort_values("pred_ensemble", ascending=False).iloc[0]
+            trigger_returns.append(float(trigger_row["ev_target"]))
+            days_into_test += 1
+            next_date_idx += 1
+
+            if days_into_test >= test_days:
+                retrain_reason = "test_days_cap"
+                break
+            if days_into_test >= step_days:
+                retrain_reason = "cadence_step_days"
+                break
+            if days_into_test >= retrain_deterioration_lookback_days:
+                trailing = np.array(trigger_returns[-retrain_deterioration_lookback_days:], dtype=float)
+                trigger_avg_ev = float(np.mean(trailing))
+                trigger_win_rate = float(np.mean(trailing > 0))
+                if (
+                    trigger_avg_ev <= retrain_deterioration_max_avg_ev
+                    and trigger_win_rate <= retrain_deterioration_min_win_rate
+                ):
+                    retrain_reason = "deterioration_trigger"
+                    break
+
+        if not current_test_chunks:
+            break
+
+        test_sub = pd.concat(current_test_chunks, ignore_index=True)
         log(
             "Primary diagnostic ensemble weights: "
             + ", ".join(f"{model_name}={primary_weights[model_name]:.3f}" for model_name in primary_weights)
@@ -404,16 +472,41 @@ def run_walkforward_model(
         log(
             "Specialist Top-1 ensemble: "
             + ", ".join(specialist_ensemble_models)
-            + f" via daily rank averaging with trailing lookback={specialist_weight_lookback_days}"
+            + (
+                f" via daily rank averaging with weighting_mode={specialist_weighting_mode} "
+                f"and trailing lookback={specialist_weight_lookback_days}"
+            )
+        )
+        log(
+            f"Completed window {window_idx} with {days_into_test} test dates; "
+            f"retrain_reason={retrain_reason}; "
+            f"trigger_avg_ev={trigger_avg_ev if not np.isnan(trigger_avg_ev) else float('nan'):.6f}; "
+            f"trigger_win_rate={trigger_win_rate if not np.isnan(trigger_win_rate) else float('nan'):.3f}"
         )
 
+        for model_name in models:
+            window_diagnostics.append(
+                {
+                    "window_id": window_idx,
+                    "model": model_name,
+                    "fit_dates": len(fit_dates),
+                    "test_dates": days_into_test,
+                    "feature_subset": model_subsets[model_name],
+                    "retrain_reason": retrain_reason,
+                    "trigger_avg_ev": trigger_avg_ev,
+                    "trigger_win_rate": trigger_win_rate,
+                }
+            )
         window_diagnostics.append(
             {
                 "window_id": window_idx,
                 "model": "pred_ensemble",
                 "fit_dates": len(fit_dates),
-                "test_dates": len(test_dates),
+                "test_dates": days_into_test,
                 "feature_subset": "broad_fixed_blend",
+                "retrain_reason": retrain_reason,
+                "trigger_avg_ev": trigger_avg_ev,
+                "trigger_win_rate": trigger_win_rate,
             }
         )
         window_diagnostics.append(
@@ -421,13 +514,15 @@ def run_walkforward_model(
                 "window_id": window_idx,
                 "model": "pred_specialist_ensemble",
                 "fit_dates": len(fit_dates),
-                "test_dates": len(test_dates),
+                "test_dates": days_into_test,
                 "feature_subset": "rank_blend_" + "_".join(specialist_ensemble_models),
+                "retrain_reason": retrain_reason,
+                "trigger_avg_ev": trigger_avg_ev,
+                "trigger_win_rate": trigger_win_rate,
             }
         )
-
-        test_sub["window_id"] = window_idx
-        all_test_chunks.append(test_sub[["window_id", *META_COLUMNS, *prediction_cols]])
+        all_test_chunks.append(test_sub)
+        fit_start += days_into_test
 
     pred_df = pd.concat(all_test_chunks, ignore_index=True)
     pred_df = pred_df.sort_values(["Date", "pair"]).reset_index(drop=True)
@@ -435,6 +530,7 @@ def run_walkforward_model(
         pred_df,
         specialist_ensemble_models,
         specialist_weight_lookback_days,
+        specialist_weighting_mode,
     )
     window_diag_df = pd.DataFrame(window_diagnostics)
     return pred_df, window_diag_df
