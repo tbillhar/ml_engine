@@ -228,7 +228,7 @@ class FXPipelineWindow(QMainWindow):
         self.holdout_days_input = QLineEdit(str(HOLDOUT_DAYS))
         self.specialist_weighting_mode_input = QComboBox()
         self.specialist_weighting_mode_input.addItems(
-            ["equal", "soft_dynamic", "winner_take_all", "winner_take_most"]
+            ["equal", "soft_dynamic", "winner_take_all", "winner_take_most", "sticky_winner"]
         )
         self.specialist_weighting_mode_input.setCurrentText(SPECIALIST_WEIGHTING_MODE)
         self.specialist_members_input = QLineEdit(",".join(SPECIALIST_ENSEMBLE_MEMBERS))

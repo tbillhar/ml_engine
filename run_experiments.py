@@ -131,7 +131,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--specialist-weighting-mode",
         default=SPECIALIST_WEIGHTING_MODE,
-        choices=["equal", "soft_dynamic", "winner_take_all", "winner_take_most"],
+        choices=["equal", "soft_dynamic", "winner_take_all", "winner_take_most", "sticky_winner"],
         help="Weighting mode for the specialist ensemble.",
     )
     parser.add_argument(
