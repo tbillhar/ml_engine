@@ -1,0 +1,155 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2650" height="1600" viewBox="0 0 2650 1600">
+  <defs>
+    <style>
+      .title { font: 700 34px Arial, sans-serif; fill: #18324b; }
+      .box { fill: #eef6ff; stroke: #2d5c85; stroke-width: 2.2; rx: 14; ry: 14; }
+      .decision { fill: #fff7e8; stroke: #9a6b00; stroke-width: 2.2; }
+      .term { fill: #eaf7ef; stroke: #2f7d4a; stroke-width: 2.2; rx: 18; ry: 18; }
+      .text { font: 18px Arial, sans-serif; fill: #1f2933; }
+      .small { font: 14px Arial, sans-serif; fill: #1f2933; }
+      .label { font: 14px Arial, sans-serif; fill: #6a4a00; font-weight: 700; }
+      .arrow { stroke: #44566c; stroke-width: 2.5; fill: none; marker-end: url(#arrowhead); }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#44566c"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="2650" height="1600" fill="#ffffff"/>
+  <text x="1250" y="48" text-anchor="middle" class="title">Sticky Winner Specialist Router</text>
+
+  <!-- top spine -->
+  <rect x="1070" y="85" width="360" height="68" class="term"/>
+  <text x="1250" y="114" text-anchor="middle" class="text">New trading day t</text>
+  <text x="1250" y="136" text-anchor="middle" class="small">Use only prior out-of-sample history</text>
+
+  <rect x="910" y="195" width="680" height="92" class="box"/>
+  <text x="1250" y="228" text-anchor="middle" class="text">For each specialist model</text>
+  <text x="1250" y="252" text-anchor="middle" class="small">compute trailing Top-1 average ev_target</text>
+  <text x="1250" y="274" text-anchor="middle" class="small">over last SPECIALIST_WEIGHT_LOOKBACK_DAYS</text>
+
+  <rect x="1010" y="330" width="480" height="74" class="box"/>
+  <text x="1250" y="362" text-anchor="middle" class="text">Find challenger</text>
+  <text x="1250" y="385" text-anchor="middle" class="small">model with highest trailing average EV</text>
+
+  <polygon points="1250,450 1410,530 1250,610 1090,530" class="decision"/>
+  <text x="1250" y="520" text-anchor="middle" class="text">Any prior active</text>
+  <text x="1250" y="543" text-anchor="middle" class="text">model?</text>
+
+  <!-- left side -->
+  <polygon points="530,450 690,530 530,610 370,530" class="decision"/>
+  <text x="530" y="518" text-anchor="middle" class="text">Challenger same as</text>
+  <text x="530" y="541" text-anchor="middle" class="text">current active?</text>
+
+  <rect x="160" y="690" width="260" height="74" class="box"/>
+  <text x="290" y="720" text-anchor="middle" class="text">Stay current</text>
+  <text x="290" y="744" text-anchor="middle" class="small">reason: stay_current_best</text>
+
+  <polygon points="900,770 1060,850 900,930 740,850" class="decision"/>
+  <text x="900" y="838" text-anchor="middle" class="text">Held current model</text>
+  <text x="900" y="861" text-anchor="middle" class="text">for min hold days?</text>
+
+  <rect x="720" y="1110" width="260" height="74" class="box"/>
+  <text x="850" y="1140" text-anchor="middle" class="text">Stay current</text>
+  <text x="850" y="1164" text-anchor="middle" class="small">reason: hold_lock</text>
+
+  <!-- right side -->
+  <polygon points="2040,450 2200,530 2040,610 1880,530" class="decision"/>
+  <text x="2040" y="518" text-anchor="middle" class="text">Challenger has</text>
+  <text x="2040" y="541" text-anchor="middle" class="text">positive avg EV?</text>
+
+  <rect x="1900" y="690" width="280" height="74" class="box"/>
+  <text x="2040" y="720" text-anchor="middle" class="text">Set active model = challenger</text>
+  <text x="2040" y="744" text-anchor="middle" class="small">reason: init_leader</text>
+
+  <rect x="2220" y="690" width="280" height="74" class="box"/>
+  <text x="2360" y="720" text-anchor="middle" class="text">Fallback to neutral/equal</text>
+  <text x="2360" y="744" text-anchor="middle" class="small">reason: no_positive_leader_equal</text>
+
+  <polygon points="1370,770 1530,850 1370,930 1210,850" class="decision"/>
+  <text x="1370" y="838" text-anchor="middle" class="text">Challenger has</text>
+  <text x="1370" y="861" text-anchor="middle" class="text">positive avg EV?</text>
+
+  <rect x="1210" y="1110" width="320" height="74" class="box"/>
+  <text x="1370" y="1140" text-anchor="middle" class="text">Stay current</text>
+  <text x="1370" y="1164" text-anchor="middle" class="small">reason: no_positive_challenger</text>
+
+  <polygon points="1820,770 1980,850 1820,930 1660,850" class="decision"/>
+  <text x="1820" y="826" text-anchor="middle" class="text">Challenger beats current</text>
+  <text x="1820" y="849" text-anchor="middle" class="text">by margin?</text>
+  <text x="1820" y="872" text-anchor="middle" class="small">SPECIALIST_SWITCH_MARGIN_MIN_AVG_EV</text>
+
+  <rect x="1680" y="1110" width="280" height="74" class="box"/>
+  <text x="1820" y="1140" text-anchor="middle" class="text">Stay current</text>
+  <text x="1820" y="1164" text-anchor="middle" class="small">reason: margin_not_met</text>
+
+  <rect x="2020" y="1110" width="280" height="74" class="box"/>
+  <text x="2160" y="1140" text-anchor="middle" class="text">Switch to challenger</text>
+  <text x="2160" y="1164" text-anchor="middle" class="small">reason: switch_margin</text>
+
+  <!-- common tail -->
+  <rect x="900" y="1290" width="700" height="54" class="box"/>
+  <text x="1250" y="1323" text-anchor="middle" class="text">Assign specialist weights: active model = 100%, others = 0%</text>
+
+  <rect x="900" y="1380" width="700" height="54" class="box"/>
+  <text x="1250" y="1413" text-anchor="middle" class="text">Log active_model, switch_reason, and weight_info</text>
+
+  <rect x="900" y="1475" width="700" height="60" class="term"/>
+  <text x="1250" y="1511" text-anchor="middle" class="text">Use active model to drive today's specialist ensemble score</text>
+
+  <!-- spine arrows -->
+  <path d="M1250 153 L1250 195" class="arrow"/>
+  <path d="M1250 287 L1250 330" class="arrow"/>
+  <path d="M1250 404 L1250 450" class="arrow"/>
+
+  <!-- split from prior active -->
+  <path d="M1090 530 L690 530" class="arrow"/>
+  <text x="865" y="510" class="label">Has prior active</text>
+
+  <path d="M1410 530 L1880 530" class="arrow"/>
+  <text x="1625" y="510" class="label">No prior active</text>
+
+  <!-- left branch arrows -->
+  <path d="M370 530 L240 530 L240 727 L160 727" class="arrow"/>
+  <text x="180" y="510" class="label">Yes</text>
+
+  <path d="M530 610 L530 727 L740 727" class="arrow"/>
+  <text x="548" y="660" class="label">No</text>
+
+  <path d="M1060 850 L1210 850" class="arrow"/>
+  <text x="1115" y="830" class="label">Yes</text>
+
+  <path d="M900 930 L900 1110" class="arrow"/>
+  <text x="918" y="1020" class="label">No</text>
+
+  <!-- right branch arrows -->
+  <path d="M2040 610 L2040 690" class="arrow"/>
+  <text x="2058" y="650" class="label">Yes</text>
+
+  <path d="M2200 530 L2520 530 L2520 727 L2500 727" class="arrow"/>
+  <text x="2280" y="510" class="label">No</text>
+
+  <path d="M1370 930 L1370 1110" class="arrow"/>
+  <text x="1388" y="1020" class="label">No</text>
+
+  <path d="M1530 850 L1660 850" class="arrow"/>
+  <text x="1585" y="830" class="label">Yes</text>
+
+  <path d="M1820 930 L1820 1110" class="arrow"/>
+  <text x="1838" y="1020" class="label">No</text>
+
+  <path d="M1980 850 L2160 850 L2160 1110" class="arrow"/>
+  <text x="2055" y="830" class="label">Yes</text>
+
+  <!-- merge to common tail -->
+  <path d="M290 764 L290 1317 L900 1317" class="arrow"/>
+  <path d="M850 1184 L850 1317 L900 1317" class="arrow"/>
+  <path d="M1370 1184 L1370 1317" class="arrow"/>
+  <path d="M1820 1184 L1820 1317 L1600 1317" class="arrow"/>
+  <path d="M2160 1184 L2160 1317 L1600 1317" class="arrow"/>
+  <path d="M2040 764 L2040 1245 L1600 1245 L1600 1317" class="arrow"/>
+  <path d="M2360 764 L2360 1245 L1600 1245 L1600 1317" class="arrow"/>
+
+  <path d="M1250 1344 L1250 1380" class="arrow"/>
+  <path d="M1250 1434 L1250 1475" class="arrow"/>
+</svg>

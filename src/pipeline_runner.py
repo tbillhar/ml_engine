@@ -531,6 +531,7 @@ def run_pipeline(
         long_df,
         fit_days=fit_days,
         step_days=step_days,
+        holdout_days=holdout_days,
         live_model=live_model,
         specialist_weighting_mode=specialist_weighting_mode,
         specialist_ensemble_models=specialist_ensemble_models,

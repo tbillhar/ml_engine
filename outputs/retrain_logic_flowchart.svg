@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2200" height="1500" viewBox="0 0 2200 1500">
+  <defs>
+    <style>
+      .title { font: 700 34px Arial, sans-serif; fill: #18324b; }
+      .box { fill: #eef6ff; stroke: #2d5c85; stroke-width: 2.2; rx: 14; ry: 14; }
+      .decision { fill: #fff7e8; stroke: #9a6b00; stroke-width: 2.2; }
+      .term { fill: #eaf7ef; stroke: #2f7d4a; stroke-width: 2.2; rx: 18; ry: 18; }
+      .text { font: 18px Arial, sans-serif; fill: #1f2933; }
+      .small { font: 14px Arial, sans-serif; fill: #1f2933; }
+      .label { font: 14px Arial, sans-serif; fill: #6a4a00; font-weight: 700; }
+      .arrow { stroke: #44566c; stroke-width: 2.5; fill: none; marker-end: url(#arrowhead); }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#44566c"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="2200" height="1500" fill="#ffffff"/>
+  <text x="1100" y="46" text-anchor="middle" class="title">Training And Retraining Logic</text>
+
+  <rect x="900" y="80" width="400" height="70" class="term"/>
+  <text x="1100" y="110" text-anchor="middle" class="text">Start walk-forward run</text>
+  <text x="1100" y="132" text-anchor="middle" class="small">Initialize date cursor and model instance state</text>
+
+  <rect x="760" y="190" width="680" height="90" class="box"/>
+  <text x="1100" y="223" text-anchor="middle" class="text">Train all candidate models</text>
+  <text x="1100" y="247" text-anchor="middle" class="small">Use latest FIT_DAYS ending just before the first out-of-sample day</text>
+  <text x="1100" y="269" text-anchor="middle" class="small">Reset current model-instance counters</text>
+
+  <rect x="830" y="330" width="540" height="80" class="box"/>
+  <text x="1100" y="362" text-anchor="middle" class="text">For next out-of-sample day t</text>
+  <text x="1100" y="385" text-anchor="middle" class="small">Generate predictions from current trained model set</text>
+
+  <rect x="780" y="460" width="640" height="92" class="box"/>
+  <text x="1100" y="493" text-anchor="middle" class="text">Trade and observe realized result</text>
+  <text x="1100" y="517" text-anchor="middle" class="small">Use selected LIVE_MODEL Top-1 choice</text>
+  <text x="1100" y="539" text-anchor="middle" class="small">Record realized next_ret and ev_target for day t</text>
+
+  <rect x="750" y="600" width="700" height="92" class="box"/>
+  <text x="1100" y="633" text-anchor="middle" class="text">Update current model-instance history</text>
+  <text x="1100" y="657" text-anchor="middle" class="small">Append today's selected-live-model Top-1 outcome</text>
+  <text x="1100" y="679" text-anchor="middle" class="small">Track days since last retrain and current-window OOS performance</text>
+
+  <polygon points="1100,740 1280,820 1100,900 920,820" class="decision"/>
+  <text x="1100" y="812" text-anchor="middle" class="text">Enough days for deterioration</text>
+  <text x="1100" y="835" text-anchor="middle" class="text">check?</text>
+
+  <polygon points="620,980 840,1080 620,1180 400,1080" class="decision"/>
+  <text x="620" y="1055" text-anchor="middle" class="text">Trailing Top-1 win rate</text>
+  <text x="620" y="1078" text-anchor="middle" class="text">&lt;= RETRAIN_DET_MIN_WIN_RATE?</text>
+  <text x="620" y="1101" text-anchor="middle" class="small">last RETRAIN_DET_LOOKBACK_DAYS</text>
+
+  <polygon points="1100,980 1320,1080 1100,1180 880,1080" class="decision"/>
+  <text x="1100" y="1055" text-anchor="middle" class="text">Trailing average ev_target</text>
+  <text x="1100" y="1078" text-anchor="middle" class="text">&lt;= RETRAIN_DET_MAX_AVG_EV?</text>
+  <text x="1100" y="1101" text-anchor="middle" class="small">last RETRAIN_DET_LOOKBACK_DAYS</text>
+
+  <polygon points="1580,980 1780,1080 1580,1180 1380,1080" class="decision"/>
+  <text x="1580" y="1066" text-anchor="middle" class="text">Days since last retrain</text>
+  <text x="1580" y="1089" text-anchor="middle" class="text">&gt;= STEP_DAYS?</text>
+
+  <rect x="900" y="1270" width="400" height="76" class="box"/>
+  <text x="1100" y="1302" text-anchor="middle" class="text">Retrain all models</text>
+  <text x="1100" y="1325" text-anchor="middle" class="small">Use latest rolling FIT_DAYS window</text>
+
+  <rect x="1510" y="1270" width="420" height="76" class="box"/>
+  <text x="1720" y="1302" text-anchor="middle" class="text">Keep current model instance</text>
+  <text x="1720" y="1325" text-anchor="middle" class="small">Advance to next out-of-sample day</text>
+
+  <rect x="900" y="1400" width="400" height="56" class="term"/>
+  <text x="1100" y="1434" text-anchor="middle" class="text">Loop until out-of-sample history is exhausted</text>
+
+  <path d="M1100 150 L1100 190" class="arrow"/>
+  <path d="M1100 280 L1100 330" class="arrow"/>
+  <path d="M1100 410 L1100 460" class="arrow"/>
+  <path d="M1100 552 L1100 600" class="arrow"/>
+  <path d="M1100 692 L1100 740" class="arrow"/>
+
+  <path d="M1010 885 L760 885 L760 980 L620 980" class="arrow"/>
+  <text x="830" y="868" class="label">Yes</text>
+
+  <path d="M1280 820 L1580 820 L1580 980" class="arrow"/>
+  <text x="1410" y="800" class="label">No: only cadence check is available</text>
+
+  <path d="M840 1080 L880 1080" class="arrow"/>
+  <text x="852" y="1060" class="label">Yes</text>
+
+  <path d="M620 1180 L620 1308 L900 1308" class="arrow"/>
+  <text x="640" y="1248" class="label">No</text>
+
+  <path d="M1100 1180 L1100 1270" class="arrow"/>
+  <text x="1118" y="1220" class="label">Yes</text>
+
+  <path d="M1320 1080 L1380 1080" class="arrow"/>
+  <text x="1340" y="1060" class="label">No: skip deterioration retrain</text>
+
+  <path d="M1580 1180 L1580 1270" class="arrow"/>
+  <text x="1598" y="1220" class="label">Yes</text>
+
+  <path d="M1780 1080 L1930 1080 L1930 1308" class="arrow"/>
+  <text x="1820" y="1060" class="label">No</text>
+
+  <path d="M1100 1346 L1100 1400" class="arrow"/>
+  <path d="M1720 1346 L1720 1428 L1300 1428" class="arrow"/>
+  <path d="M1100 1456 L1100 1490 L350 1490 L350 370 L830 370" class="arrow"/>
+</svg>

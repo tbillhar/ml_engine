@@ -1,0 +1,56 @@
+Add a configurable data-source layer:
+
+yfinance
+alphavantage
+ecb
+with Yahoo/Alpha Vantage for OHLC feature generation, and ECB as a rates fallback or cross-check.
+
+
+
+lgbm_deep_returns_momentum, lgbm_deep_volatility, lgbm_deep_corr_regime
+lgbm_deep_volatility,rf_returns_momentum,lgbm_deep_corr_regime
+lgbm_deep_volatility,logreg_returns_momentum,lgbm_deep_corr_regime
+lgbm_deep_returns_momentum, lgbm_deep_volatility, lgbm_deep_corr_regime, rf_returns_momentum, logreg_returns_momentum
+
+
+retrain each model individually  on its own cadence + deterioration trigger
+
+introduce a small number of candidate fit-window classes and let models differ across them
+For example:
+
+short window: 120
+medium window: 240
+long window: 480
+Then assign or test models across those, such as:
+
+momentum specialists: short/medium
+corr/regime specialists: medium/long
+
+1) Only 2 of the models have their results shown in the Performance Summary Table
+2) Make the default parameters in the GUI be:
+fit_days	180
+step_days	30
+rebalance_days	1
+horizon	1
+transaction_loss_pct	0.025
+trading_days_per_year	260
+holdout_days	30
+live_model	specialist_ensemble
+live_decision_mode	top1
+live_prediction_column	pred_specialist_ensemble
+specialist_weighting_mode	sticky_winner
+specialist_ensemble_members	lgbm_deep_returns_momentum,lgbm_deep_volatility,lgbm_deep_corr_regime,rf_returns_momentum,logreg_returns_momentum
+specialist_weight_lookback_days	30
+specialist_min_model_hold_days	5
+specialist_switch_margin_min_avg_ev	0
+specialist_switch_require_positive_ev	TRUE
+retrain_deterioration_lookback_days	20
+retrain_deterioration_min_win_rate	0.45
+retrain_deterioration_max_avg_ev	0
+research_test_dates	662
+holdout_test_dates	30
+3) Give some indication of how far we are through the HOLDOUT days so we get some idea of how much longer a Run Pipeline will take, since currently we only see Training Window 27, Training Window 28, etc.
+ 
+
+
+

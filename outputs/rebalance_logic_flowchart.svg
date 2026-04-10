@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2200" height="1450" viewBox="0 0 2200 1450">
+  <defs>
+    <style>
+      .title { font: 700 34px Arial, sans-serif; fill: #18324b; }
+      .box { fill: #eef6ff; stroke: #2d5c85; stroke-width: 2.2; rx: 14; ry: 14; }
+      .decision { fill: #fff7e8; stroke: #9a6b00; stroke-width: 2.2; }
+      .term { fill: #eaf7ef; stroke: #2f7d4a; stroke-width: 2.2; rx: 18; ry: 18; }
+      .text { font: 18px Arial, sans-serif; fill: #1f2933; }
+      .small { font: 14px Arial, sans-serif; fill: #1f2933; }
+      .label { font: 14px Arial, sans-serif; fill: #6a4a00; font-weight: 700; }
+      .arrow { stroke: #44566c; stroke-width: 2.5; fill: none; marker-end: url(#arrowhead); }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#44566c"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="2200" height="1450" fill="#ffffff"/>
+  <text x="1100" y="46" text-anchor="middle" class="title">Rebalance Logic</text>
+
+  <rect x="910" y="80" width="380" height="70" class="term"/>
+  <text x="1100" y="110" text-anchor="middle" class="text">New out-of-sample day t</text>
+  <text x="1100" y="132" text-anchor="middle" class="small">Predictions already exist for all models on day t</text>
+
+  <rect x="760" y="195" width="680" height="92" class="box"/>
+  <text x="1100" y="228" text-anchor="middle" class="text">Select today's live score column</text>
+  <text x="1100" y="252" text-anchor="middle" class="small">Use LIVE_MODEL or specialist ensemble score</text>
+  <text x="1100" y="274" text-anchor="middle" class="small">Rank all pairs for day t by that score</text>
+
+  <rect x="860" y="330" width="480" height="74" class="box"/>
+  <text x="1100" y="362" text-anchor="middle" class="text">Find today's Top-1 pair</text>
+  <text x="1100" y="385" text-anchor="middle" class="small">Highest-ranked pair on day t</text>
+
+  <polygon points="1100,450 1300,530 1100,610 900,530" class="decision"/>
+  <text x="1100" y="520" text-anchor="middle" class="text">Is day t a rebalance day?</text>
+  <text x="1100" y="543" text-anchor="middle" class="small">Based on REBALANCE_DAYS schedule</text>
+
+  <rect x="360" y="700" width="420" height="88" class="box"/>
+  <text x="570" y="733" text-anchor="middle" class="text">Keep holding prior selected pair</text>
+  <text x="570" y="757" text-anchor="middle" class="small">Do not switch to today's new Top-1 pair</text>
+  <text x="570" y="779" text-anchor="middle" class="small">Turnover = 0 for this day</text>
+
+  <rect x="1420" y="700" width="420" height="88" class="box"/>
+  <text x="1630" y="733" text-anchor="middle" class="text">Rebalance into today's Top-1 pair</text>
+  <text x="1630" y="757" text-anchor="middle" class="small">Enter new pair or switch from prior holding</text>
+  <text x="1630" y="779" text-anchor="middle" class="small">Turnover reflects the position change</text>
+
+  <polygon points="570,860 770,940 570,1020 370,940" class="decision"/>
+  <text x="570" y="930" text-anchor="middle" class="text">What realized return is used</text>
+  <text x="570" y="953" text-anchor="middle" class="text">for day t?</text>
+
+  <polygon points="1630,860 1830,940 1630,1020 1430,940" class="decision"/>
+  <text x="1630" y="930" text-anchor="middle" class="text">What realized return is used</text>
+  <text x="1630" y="953" text-anchor="middle" class="text">for day t?</text>
+
+  <rect x="260" y="1090" width="620" height="84" class="box"/>
+  <text x="570" y="1122" text-anchor="middle" class="text">Use next_ret of the previously held pair</text>
+  <text x="570" y="1146" text-anchor="middle" class="small">The old holding continues to mark-to-market for this day</text>
+
+  <rect x="1320" y="1090" width="620" height="84" class="box"/>
+  <text x="1630" y="1122" text-anchor="middle" class="text">Use next_ret of today's newly selected Top-1 pair</text>
+  <text x="1630" y="1146" text-anchor="middle" class="small">The refreshed holding drives today's mark-to-market</text>
+
+  <rect x="760" y="1240" width="680" height="72" class="box"/>
+  <text x="1100" y="1271" text-anchor="middle" class="text">Record day-t strategy result</text>
+  <text x="1100" y="1294" text-anchor="middle" class="small">Store daily return, turnover, and held pair identity</text>
+
+  <rect x="760" y="1360" width="680" height="56" class="term"/>
+  <text x="1100" y="1394" text-anchor="middle" class="text">Advance to next out-of-sample day</text>
+
+  <path d="M1100 150 L1100 195" class="arrow"/>
+  <path d="M1100 287 L1100 330" class="arrow"/>
+  <path d="M1100 404 L1100 450" class="arrow"/>
+
+  <path d="M900 530 L780 530 L780 744" class="arrow"/>
+  <text x="820" y="510" class="label">No</text>
+
+  <path d="M1300 530 L1420 530 L1420 744" class="arrow"/>
+  <text x="1340" y="510" class="label">Yes</text>
+
+  <path d="M570 788 L570 860" class="arrow"/>
+  <path d="M1630 788 L1630 860" class="arrow"/>
+
+  <path d="M570 1020 L570 1090" class="arrow"/>
+  <path d="M1630 1020 L1630 1090" class="arrow"/>
+
+  <path d="M570 1174 L570 1276 L760 1276" class="arrow"/>
+  <path d="M1630 1174 L1630 1276 L1440 1276" class="arrow"/>
+
+  <path d="M1100 1312 L1100 1360" class="arrow"/>
+</svg>

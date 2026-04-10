@@ -1,0 +1,2 @@
+csv_path,fit_days,calibration_days,test_days,step_days,horizon,transaction_loss_pct,trading_days_per_year,p_win_threshold,holdout_days,live_model,live_decision_mode,live_prediction_column,research_test_dates,holdout_test_dates
+data\fx_features_full.csv,480,120,30,30,1,0.025,260,0.5,60,rf_returns_momentum,threshold_top1,pred_rf_returns_momentum,210,60

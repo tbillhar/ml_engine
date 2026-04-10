@@ -465,6 +465,7 @@ def run_walkforward_model(
     long_df: pd.DataFrame,
     fit_days: int,
     step_days: int,
+    holdout_days: int,
     live_model: str,
     specialist_weighting_mode: str,
     specialist_ensemble_models: list[str],
@@ -491,6 +492,8 @@ def run_walkforward_model(
     specialist_prediction_cols = [f"pred_{name}" for name in specialist_ensemble_models]
 
     all_dates = sorted(long_df["Date"].unique())
+    total_oos_days = max(len(all_dates) - fit_days, 0)
+    holdout_start_oos_idx = max(total_oos_days - holdout_days, 0)
     all_test_chunks = []
     window_diagnostics = []
     prediction_cols = [f"pred_{name}" for name in models]
@@ -503,6 +506,8 @@ def run_walkforward_model(
     router_hold_days = 0
     fit_start = 0
     window_idx = 0
+    processed_oos_days = 0
+    holdout_started = False
     while fit_start + fit_days < len(all_dates):
         fit_dates = all_dates[fit_start:fit_start + fit_days]
         train_sub, _, y_train, _ = make_xy(long_df, fit_dates, feature_cols)
@@ -597,6 +602,22 @@ def run_walkforward_model(
                 global_specialist_top1_returns[model_col].append(float(chosen_row["ev_target"]))
             days_into_test += 1
             next_date_idx += 1
+            processed_oos_days += 1
+
+            if not holdout_started and processed_oos_days > holdout_start_oos_idx:
+                holdout_started = True
+                holdout_day_num = processed_oos_days - holdout_start_oos_idx
+                log(
+                    f"Entering holdout period: day {holdout_day_num}/{holdout_days} "
+                    f"({current_date})"
+                )
+            elif holdout_started:
+                holdout_day_num = processed_oos_days - holdout_start_oos_idx
+                if holdout_day_num == holdout_days or holdout_day_num % 5 == 0:
+                    log(
+                        f"Holdout progress: {holdout_day_num}/{holdout_days} days processed "
+                        f"({current_date})"
+                    )
 
             if days_into_test >= step_days:
                 retrain_reason = "cadence_step_days"

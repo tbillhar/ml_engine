@@ -1,4 +1,4 @@
-"""Feature dataset builder from raw Yahoo Finance OHLC data."""
+"""Feature dataset builder from raw FX OHLC or reference-rate data."""
 
 from __future__ import annotations
 

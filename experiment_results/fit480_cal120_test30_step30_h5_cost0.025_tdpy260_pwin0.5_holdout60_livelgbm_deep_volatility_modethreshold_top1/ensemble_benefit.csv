@@ -1,0 +1,7 @@
+metric,value
+Primary Ensemble Brier Improvement vs Best Single Brier,-0.0002446389330715004
+Primary Ensemble Annualized Return Improvement vs Best Single Return,-0.14930646945814274
+Primary Ensemble Sharpe Improvement vs Best Single Sharpe,-3.5935906860894695
+Inverse-Brier Ensemble Brier Improvement vs Best Single Brier,-0.0001514523315976346
+Inverse-Brier Ensemble Annualized Return Improvement vs Best Single Return,-0.164937890563575
+Inverse-Brier Ensemble Sharpe Improvement vs Best Single Sharpe,-3.825913265304802

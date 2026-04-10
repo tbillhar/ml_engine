@@ -1,0 +1,8 @@
+python run_experiments.py `
+  --csv-path data\fx_features_full.csv `
+  --train-days 400 500 600 `
+  --test-days 20 30 `
+  --step-days 20 30 `
+  --horizon 2 3 5 `
+  --transaction-loss-pct 0.025 `
+  --trading-days-per-year 260

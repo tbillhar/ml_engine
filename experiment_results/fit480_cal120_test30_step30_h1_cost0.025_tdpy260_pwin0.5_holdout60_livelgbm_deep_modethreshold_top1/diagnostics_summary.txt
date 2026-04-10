@@ -1,0 +1,5 @@
+Selected live strategy: lgbm_deep Threshold Top-1 | Holdout AnnRet 6.9% | Sharpe 0.79
+Best holdout Top-1 selector: pred_rf_corr_regime | AnnRet 18.9% | Sharpe 2.32 | Win rate 50.0%
+Best holdout Top-3 selector: pred_logreg_returns_momentum | AnnRet 9.9% | Sharpe 1.48
+Best threshold model: pred_logreg_returns_momentum | AnnRet 5.1% | Sharpe 1.08
+Average pairwise prediction correlation: 0.369

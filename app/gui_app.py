@@ -40,12 +40,14 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from src.config import (
+    ALPHAVANTAGE_API_KEY,
     FEATURE_DATA_FILENAME,
     FIT_DAYS,
     HORIZON,
     HOLDOUT_DAYS,
     LIVE_MODEL,
     REBALANCE_DAYS,
+    RAW_DATA_SOURCE,
     RAW_DATA_FILENAME,
     RETRAIN_DETERIORATION_LOOKBACK_DAYS,
     RETRAIN_DETERIORATION_MAX_AVG_EV,
@@ -62,7 +64,7 @@ from src.config import (
 )
 from src.feature_dataset_builder import build_feature_dataset
 from src.pipeline_runner import diagnostics_guide_text, run_pipeline
-from src.raw_data_loader import download_raw_fx_data
+from src.raw_data_loader import DATA_SOURCE_INFO, SUPPORTED_DATA_SOURCES, download_raw_fx_data
 
 
 class PipelineWorker(QObject):
@@ -147,19 +149,26 @@ class PipelineWorker(QObject):
 
 
 class RawDataWorker(QObject):
-    """Background worker to download raw Yahoo Finance data."""
+    """Background worker to download raw FX data."""
 
     log = Signal(str)
     completed = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, output_path: Path) -> None:
+    def __init__(self, output_path: Path, source: str, alphavantage_api_key: str) -> None:
         super().__init__()
         self.output_path = output_path
+        self.source = source
+        self.alphavantage_api_key = alphavantage_api_key
 
     def run(self) -> None:
         try:
-            path = download_raw_fx_data(self.output_path, log_fn=self.log.emit)
+            path = download_raw_fx_data(
+                self.output_path,
+                source=self.source,
+                alphavantage_api_key=self.alphavantage_api_key,
+                log_fn=self.log.emit,
+            )
             self.completed.emit(str(path))
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
@@ -214,7 +223,18 @@ class FXPipelineWindow(QMainWindow):
 
         select_csv_btn = QPushButton("Select CSV")
         select_csv_btn.clicked.connect(self.select_csv)
-        self.download_raw_btn = QPushButton("Download Yahoo Data")
+        self.raw_source_input = QComboBox()
+        self.raw_source_input.addItems(list(SUPPORTED_DATA_SOURCES))
+        self.raw_source_input.setCurrentText(RAW_DATA_SOURCE)
+        self.raw_source_input.currentTextChanged.connect(self.update_raw_source_info)
+        self.alphavantage_key_input = QLineEdit(ALPHAVANTAGE_API_KEY)
+        self.alphavantage_key_input.setPlaceholderText("Alpha Vantage API key (only needed for alphavantage)")
+        self.alphavantage_key_input.setEchoMode(QLineEdit.Password)
+        self.raw_source_info_label = QLabel()
+        self.raw_source_info_label.setWordWrap(True)
+        self.raw_source_info_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+
+        self.download_raw_btn = QPushButton("Download Raw Data")
         self.download_raw_btn.clicked.connect(self.start_raw_download)
         self.build_features_btn = QPushButton("Build Feature CSV")
         self.build_features_btn.clicked.connect(self.start_feature_build)
@@ -292,14 +312,15 @@ class FXPipelineWindow(QMainWindow):
         self.summary_table.setSortingEnabled(True)
         self.summary_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.summary_table.verticalHeader().setVisible(False)
+        self.summary_table.setMinimumHeight(420)
 
         self.diagnostics_summary = QPlainTextEdit()
         self.diagnostics_summary.setReadOnly(True)
         self.diagnostics_summary.setPlaceholderText("Key observations from diagnostics will appear here after a run.")
-        self.diagnostics_summary.setMinimumHeight(140)
+        self.diagnostics_summary.setMinimumHeight(110)
         self.diagnostics_guide = QPlainTextEdit()
         self.diagnostics_guide.setReadOnly(True)
-        self.diagnostics_guide.setMinimumHeight(180)
+        self.diagnostics_guide.setMinimumHeight(130)
         self.diagnostics_guide.setPlainText(
             diagnostics_guide_text(
                 SPECIALIST_ENSEMBLE_MEMBERS,
@@ -328,6 +349,9 @@ class FXPipelineWindow(QMainWindow):
         data_form = QFormLayout()
         data_form.addRow("RAW_DATA_CSV", self.raw_data_path_label)
         data_form.addRow("FEATURE_CSV", self.feature_data_path_label)
+        data_form.addRow("RAW_DATA_SOURCE", self.raw_source_input)
+        data_form.addRow("ALPHAVANTAGE_API_KEY", self.alphavantage_key_input)
+        data_form.addRow("SOURCE_INFO", self.raw_source_info_label)
 
         params_form = QFormLayout()
         params_form.addRow("FIT_DAYS", self.fit_input)
@@ -370,7 +394,7 @@ class FXPipelineWindow(QMainWindow):
         summary_layout = QVBoxLayout(summary_panel)
         summary_layout.setContentsMargins(0, 0, 0, 0)
         summary_layout.addWidget(QLabel("Performance Summary"))
-        summary_layout.addWidget(self.summary_table, 3)
+        summary_layout.addWidget(self.summary_table, 6)
         summary_layout.addWidget(QLabel("Key Observations"))
         summary_layout.addWidget(self.diagnostics_summary, 1)
         summary_layout.addWidget(QLabel("Diagnostics Guide"))
@@ -387,9 +411,9 @@ class FXPipelineWindow(QMainWindow):
         right_splitter = QSplitter(Qt.Vertical)
         right_splitter.addWidget(summary_panel)
         right_splitter.addWidget(charts_panel)
-        right_splitter.setStretchFactor(0, 3)
+        right_splitter.setStretchFactor(0, 5)
         right_splitter.setStretchFactor(1, 4)
-        right_splitter.setSizes([360, 520])
+        right_splitter.setSizes([520, 400])
 
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
@@ -407,9 +431,23 @@ class FXPipelineWindow(QMainWindow):
         container_layout = QVBoxLayout(container)
         container_layout.addWidget(splitter)
         self.setCentralWidget(container)
+        self.update_raw_source_info(self.raw_source_input.currentText())
 
     def append_log(self, msg: str) -> None:
         self.logs.appendPlainText(msg)
+
+    def update_raw_source_info(self, source: str) -> None:
+        source_key = source.strip().lower()
+        info = DATA_SOURCE_INFO.get(source_key, {})
+        self.raw_source_info_label.setText(
+            "\n".join(
+                [
+                    f"Type: {info.get('type', 'Unknown')}",
+                    f"Expected history depth: {info.get('expected_history_depth', 'Unknown')}",
+                    f"Warning: {info.get('warning', '')}",
+                ]
+            )
+        )
 
     def _set_busy(self, busy: bool) -> None:
         self.download_raw_btn.setEnabled(not busy)
@@ -439,11 +477,18 @@ class FXPipelineWindow(QMainWindow):
 
         self._set_busy(True)
         self.progress_bar.setValue(0)
-        self.status_label.setText("Status: Downloading raw Yahoo data...")
-        self.append_log("Starting Yahoo Finance download...")
+        source = self.raw_source_input.currentText().strip().lower()
+        api_key = self.alphavantage_key_input.text().strip()
+
+        self.status_label.setText(f"Status: Downloading raw {source} data...")
+        self.append_log(f"Starting raw FX download from {source}...")
 
         self.task_thread = QThread()
-        self.task_worker = RawDataWorker(self.raw_data_path)
+        self.task_worker = RawDataWorker(
+            self.raw_data_path,
+            source=source,
+            alphavantage_api_key=api_key,
+        )
         self.task_worker.moveToThread(self.task_thread)
         self.task_thread.started.connect(self.task_worker.run)
 
@@ -473,7 +518,7 @@ class FXPipelineWindow(QMainWindow):
         self._set_busy(True)
         self.progress_bar.setValue(0)
         self.status_label.setText("Status: Building feature CSV...")
-        self.append_log("Building feature CSV from raw Yahoo data...")
+        self.append_log("Building feature CSV from raw FX data...")
 
         self.task_thread = QThread()
         self.task_worker = FeatureBuildWorker(self.raw_data_path, self.feature_data_path)
@@ -642,7 +687,7 @@ class FXPipelineWindow(QMainWindow):
     def on_raw_download_completed(self, raw_csv_path: str) -> None:
         self.progress_bar.setValue(100)
         self.raw_data_path_label.setText(raw_csv_path)
-        self.status_label.setText("Status: Raw Yahoo data downloaded")
+        self.status_label.setText("Status: Raw FX data downloaded")
         self.append_log(f"Raw data download completed: {raw_csv_path}")
 
     def on_feature_build_completed(self, feature_csv_path: str) -> None:
