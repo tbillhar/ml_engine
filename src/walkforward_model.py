@@ -283,6 +283,8 @@ def specialist_weights_from_history(
         if np.all(np.isnan(raw_scores)):
             return np.full(len(ensemble_models), equal_weight)
         filled = np.nan_to_num(raw_scores, nan=0.0)
+        if specialist_weighting_mode == "sticky_winner":
+            return np.full(len(ensemble_models), equal_weight)
         if specialist_weighting_mode == "equal":
             return np.full(len(ensemble_models), equal_weight)
         if specialist_weighting_mode == "winner_take_all":
@@ -307,7 +309,7 @@ def specialist_weights_from_history(
             raise ValueError(
                 "Unsupported SPECIALIST_WEIGHTING_MODE "
                 f"'{specialist_weighting_mode}'. Expected one of: "
-                "equal, soft_dynamic, winner_take_all, winner_take_most"
+                "equal, soft_dynamic, winner_take_all, winner_take_most, sticky_winner"
             )
         centered = filled - filled.mean()
         scale = max(float(np.std(centered)), 1e-4)
