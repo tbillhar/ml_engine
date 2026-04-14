@@ -715,7 +715,8 @@ class FXPipelineWindow(QMainWindow):
     def populate_summary_table(self, stats_df: pd.DataFrame) -> None:
         self.summary_table.setRowCount(len(stats_df))
         for i, row in stats_df.iterrows():
-            self.summary_table.setItem(i, 0, QTableWidgetItem(str(row["model"])))
+            display_name = row["display_name"] if "display_name" in stats_df.columns else row["model"]
+            self.summary_table.setItem(i, 0, QTableWidgetItem(str(display_name)))
             self.summary_table.setItem(i, 1, QTableWidgetItem(f"{row['Annualized Return'] * 100:.1f}%"))
             self.summary_table.setItem(i, 2, QTableWidgetItem(f"{row['Annualized Vol'] * 100:.1f}%"))
             self.summary_table.setItem(i, 3, QTableWidgetItem(f"{row['Sharpe']:.6f}"))

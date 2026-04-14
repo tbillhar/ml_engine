@@ -66,8 +66,9 @@ def compute_top_k_pnl(
     transaction_loss_pct: float = 0.0,
     k: int = 1,
     rebalance_days: int = 1,
+    ascending: bool = False,
 ) -> pd.DataFrame:
-    """Daily PnL from selecting the top-k predictions on a rebalance schedule."""
+    """Daily PnL from selecting the top/bottom-k predictions on a rebalance schedule."""
     rows = []
     transaction_loss = transaction_loss_pct / 100.0
     previous_weights: dict[str, float] = {}
@@ -77,7 +78,7 @@ def compute_top_k_pnl(
     for idx, (d, grp) in enumerate(df.groupby("Date", sort=True)):
         should_rebalance = (idx % rebalance_days == 0) or not current_weights
         if should_rebalance:
-            chosen = grp.sort_values(pred_col, ascending=False).head(k)
+            chosen = grp.sort_values(pred_col, ascending=ascending).head(k)
             weight = 1.0 / len(chosen)
             current_weights = {pair: weight for pair in chosen["pair"]}
             held_pairs = list(chosen["pair"])
@@ -100,6 +101,24 @@ def compute_top_k_pnl(
         )
         previous_weights = current_weights.copy()
     return pd.DataFrame(rows).sort_values("Date")
+
+
+def compute_bottom_k_pnl(
+    df: pd.DataFrame,
+    pred_col: str,
+    transaction_loss_pct: float = 0.0,
+    k: int = 1,
+    rebalance_days: int = 1,
+) -> pd.DataFrame:
+    """Daily PnL from selecting the bottom-k predictions on a rebalance schedule."""
+    return compute_top_k_pnl(
+        df,
+        pred_col=pred_col,
+        transaction_loss_pct=transaction_loss_pct,
+        k=k,
+        rebalance_days=rebalance_days,
+        ascending=True,
+    )
 
 
 def compute_top_quantile_pnl(
@@ -187,6 +206,32 @@ def compute_top_k_excess_vs_equal_weight_pnl(
     return merged[["Date", "pnl", "gross_return", "turnover", "trade_count", "avg_selected_score"]]
 
 
+def compute_bottom_k_excess_vs_equal_weight_pnl(
+    df: pd.DataFrame,
+    pred_col: str,
+    transaction_loss_pct: float = 0.0,
+    k: int = 1,
+    rebalance_days: int = 1,
+) -> pd.DataFrame:
+    """Daily excess PnL of Bottom-k versus equal-weight benchmark."""
+    bottom_df = compute_bottom_k_pnl(
+        df,
+        pred_col=pred_col,
+        transaction_loss_pct=transaction_loss_pct,
+        k=k,
+        rebalance_days=rebalance_days,
+    )
+    eq_df = compute_equal_weight_pnl(df, transaction_loss_pct=transaction_loss_pct)
+    merged = bottom_df.merge(
+        eq_df[["Date", "pnl", "gross_return"]],
+        on="Date",
+        suffixes=("", "_eq"),
+    )
+    merged["pnl"] = merged["pnl"] - merged["pnl_eq"]
+    merged["gross_return"] = merged["gross_return"] - merged["gross_return_eq"]
+    return merged[["Date", "pnl", "gross_return", "turnover", "trade_count", "avg_selected_score"]]
+
+
 def compute_top_bottom_spread_pnl(
     df: pd.DataFrame,
     pred_col: str,
@@ -238,6 +283,27 @@ def compute_top_bottom_spread_pnl(
         previous_weights = current_weights.copy()
 
     return pd.DataFrame(rows).sort_values("Date")
+
+
+def compute_bottom_top_spread_pnl(
+    df: pd.DataFrame,
+    pred_col: str,
+    transaction_loss_pct: float = 0.0,
+    k: int = 1,
+    rebalance_days: int = 1,
+) -> pd.DataFrame:
+    """Daily long-bottom-k minus short-top-k PnL."""
+    spread_df = compute_top_bottom_spread_pnl(
+        df,
+        pred_col=pred_col,
+        transaction_loss_pct=transaction_loss_pct,
+        k=k,
+        rebalance_days=rebalance_days,
+    ).copy()
+    spread_df["pnl"] = -spread_df["pnl"]
+    spread_df["gross_return"] = -spread_df["gross_return"]
+    spread_df["avg_selected_score"] = -spread_df["avg_selected_score"]
+    return spread_df
 
 
 def cumulative_curve(df: pd.DataFrame) -> pd.DataFrame:

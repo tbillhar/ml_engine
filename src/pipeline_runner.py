@@ -14,6 +14,9 @@ from src.data_pipeline import load_csv, parse_and_sort_dates
 from src.feature_engineering import compute_future_returns
 from src.long_format import build_long
 from src.pnl_analysis import (
+    compute_bottom_k_excess_vs_equal_weight_pnl,
+    compute_bottom_k_pnl,
+    compute_bottom_top_spread_pnl,
     compute_equal_weight_pnl,
     compute_top_k_pnl,
     compute_top_k_excess_vs_equal_weight_pnl,
@@ -252,7 +255,7 @@ def build_model_top1_curves(
     trading_days_per_year: int,
     rebalance_days: int,
 ) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
-    """Build Top-1 leaderboard rows and cumulative curves for all models."""
+    """Build Top-1/Bottom-1 leaderboard rows and cumulative curves for all models."""
     rows: list[dict[str, float | str]] = []
     curves: dict[str, pd.DataFrame] = {}
     eq_df = compute_equal_weight_pnl(pred_df, transaction_loss_pct=transaction_loss_pct)
@@ -285,23 +288,71 @@ def build_model_top1_curves(
         rows.append(
             {
                 "model": model_col,
+                "selection": "top1",
+                "display_name": f"{model_col} Top-1",
                 **stats,
                 "Excess vs Equal-weight Annualized Return": excess_stats["Annualized Return"],
                 "Excess vs Equal-weight Cumulative Return": excess_stats["Cumulative Return"],
                 "Top1-Bottom1 Annualized Return": spread_stats["Annualized Return"],
                 "Top1-Bottom1 Cumulative Return": spread_stats["Cumulative Return"],
+                "Bottom1-Top1 Annualized Return": -spread_stats["Annualized Return"],
+                "Bottom1-Top1 Cumulative Return": -spread_stats["Cumulative Return"],
             }
         )
-        curves[model_col] = cumulative_annualized_curve(pnl_df, trading_days_per_year=trading_days_per_year)
+        curves[f"{model_col} Top-1"] = cumulative_annualized_curve(pnl_df, trading_days_per_year=trading_days_per_year)
+
+        bottom_df = compute_bottom_k_pnl(
+            pred_df,
+            pred_col=model_col,
+            transaction_loss_pct=transaction_loss_pct,
+            k=1,
+            rebalance_days=rebalance_days,
+        )
+        bottom_stats = perf_stats(bottom_df, trading_days_per_year=trading_days_per_year)
+        bottom_excess_df = compute_bottom_k_excess_vs_equal_weight_pnl(
+            pred_df,
+            pred_col=model_col,
+            transaction_loss_pct=transaction_loss_pct,
+            k=1,
+            rebalance_days=rebalance_days,
+        )
+        bottom_excess_stats = perf_stats(bottom_excess_df, trading_days_per_year=trading_days_per_year)
+        bottom_top_df = compute_bottom_top_spread_pnl(
+            pred_df,
+            pred_col=model_col,
+            transaction_loss_pct=transaction_loss_pct,
+            k=1,
+            rebalance_days=rebalance_days,
+        )
+        bottom_top_stats = perf_stats(bottom_top_df, trading_days_per_year=trading_days_per_year)
+        rows.append(
+            {
+                "model": model_col,
+                "selection": "bottom1",
+                "display_name": f"{model_col} Bottom-1",
+                **bottom_stats,
+                "Excess vs Equal-weight Annualized Return": bottom_excess_stats["Annualized Return"],
+                "Excess vs Equal-weight Cumulative Return": bottom_excess_stats["Cumulative Return"],
+                "Top1-Bottom1 Annualized Return": -bottom_top_stats["Annualized Return"],
+                "Top1-Bottom1 Cumulative Return": -bottom_top_stats["Cumulative Return"],
+                "Bottom1-Top1 Annualized Return": bottom_top_stats["Annualized Return"],
+                "Bottom1-Top1 Cumulative Return": bottom_top_stats["Cumulative Return"],
+            }
+        )
+        curves[f"{model_col} Bottom-1"] = cumulative_annualized_curve(bottom_df, trading_days_per_year=trading_days_per_year)
 
     rows.append(
         {
             "model": "Equal-weight",
+            "selection": "equal_weight",
+            "display_name": "Equal-weight",
             **eq_stats,
             "Excess vs Equal-weight Annualized Return": 0.0,
             "Excess vs Equal-weight Cumulative Return": 0.0,
             "Top1-Bottom1 Annualized Return": np.nan,
             "Top1-Bottom1 Cumulative Return": np.nan,
+            "Bottom1-Top1 Annualized Return": np.nan,
+            "Bottom1-Top1 Cumulative Return": np.nan,
         }
     )
     curves["Equal-weight"] = cumulative_annualized_curve(eq_df, trading_days_per_year=trading_days_per_year)
@@ -319,7 +370,7 @@ def build_top_selection_diagnostics(
     trading_days_per_year: int,
     rebalance_days: int,
 ) -> pd.DataFrame:
-    """Compare models as Top-1 selectors on the evaluation slice."""
+    """Compare models as Top-1/Bottom-1 selectors on the evaluation slice."""
     rows: list[dict[str, float | str]] = []
     for model_col in model_cols:
         pnl_df = compute_top_k_pnl(
@@ -353,6 +404,7 @@ def build_top_selection_diagnostics(
             {
                 "model": model_col,
                 "selection": "top1",
+                "display_name": f"{model_col} Top-1",
                 "selected_rows": int(len(selected_df)),
                 "realized_win_rate": realized_win_rate,
                 "avg_selected_next_ret": avg_selected_next_ret,
@@ -363,6 +415,54 @@ def build_top_selection_diagnostics(
                 "top1_bottom1_annualized_return": spread_stats["Annualized Return"],
                 "top1_bottom1_cumulative_return": spread_stats["Cumulative Return"],
                 **stats,
+            }
+        )
+        bottom_df = compute_bottom_k_pnl(
+            pred_df,
+            pred_col=model_col,
+            transaction_loss_pct=transaction_loss_pct,
+            k=1,
+            rebalance_days=rebalance_days,
+        )
+        bottom_stats = perf_stats(bottom_df, trading_days_per_year=trading_days_per_year)
+        bottom_selected_df = (
+            pred_df.sort_values(["Date", model_col], ascending=[True, True])
+            .groupby("Date", sort=True)
+            .head(1)
+        )
+        bottom_excess_df = compute_bottom_k_excess_vs_equal_weight_pnl(
+            pred_df,
+            pred_col=model_col,
+            transaction_loss_pct=transaction_loss_pct,
+            k=1,
+            rebalance_days=rebalance_days,
+        )
+        bottom_excess_stats = perf_stats(bottom_excess_df, trading_days_per_year=trading_days_per_year)
+        bottom_top_df = compute_bottom_top_spread_pnl(
+            pred_df,
+            pred_col=model_col,
+            transaction_loss_pct=transaction_loss_pct,
+            k=1,
+            rebalance_days=rebalance_days,
+        )
+        bottom_top_stats = perf_stats(bottom_top_df, trading_days_per_year=trading_days_per_year)
+        rows.append(
+            {
+                "model": model_col,
+                "selection": "bottom1",
+                "display_name": f"{model_col} Bottom-1",
+                "selected_rows": int(len(bottom_selected_df)),
+                "realized_win_rate": float(bottom_selected_df["profit_target"].mean()) if not bottom_selected_df.empty else np.nan,
+                "avg_selected_next_ret": float(bottom_selected_df["next_ret"].mean()) if not bottom_selected_df.empty else np.nan,
+                "gross_annualized_return": bottom_stats["Gross Annualized Return"],
+                "gross_cumulative_return": bottom_stats["Gross Cumulative Return"],
+                "excess_vs_equal_weight_annualized_return": bottom_excess_stats["Annualized Return"],
+                "excess_vs_equal_weight_cumulative_return": bottom_excess_stats["Cumulative Return"],
+                "top1_bottom1_annualized_return": -bottom_top_stats["Annualized Return"],
+                "top1_bottom1_cumulative_return": -bottom_top_stats["Cumulative Return"],
+                "bottom1_top1_annualized_return": bottom_top_stats["Annualized Return"],
+                "bottom1_top1_cumulative_return": bottom_top_stats["Cumulative Return"],
+                **bottom_stats,
             }
         )
     return pd.DataFrame(rows)
@@ -487,7 +587,9 @@ def build_diagnostics_summary(
     live_pred_col: str,
 ) -> str:
     """Create a concise human-readable diagnostics summary for the GUI."""
-    selected_row = leaderboard_df[leaderboard_df["model"] == live_pred_col].iloc[0]
+    selected_row = leaderboard_df[
+        (leaderboard_df["model"] == live_pred_col) & (leaderboard_df["selection"] == "top1")
+    ].iloc[0]
     top1_df = top_selection_df[top_selection_df["selection"] == "top1"].sort_values(
         ["Sharpe", "Annualized Return"],
         ascending=[False, False],
@@ -495,6 +597,10 @@ def build_diagnostics_summary(
     best_top1 = top1_df.iloc[0]
     best_top1_model_row = model_diagnostics_df.sort_values(
         ["Top-1 Sharpe", "Top-1 Annualized Return"],
+        ascending=[False, False],
+    ).iloc[0]
+    best_bottom1 = top_selection_df[top_selection_df["selection"] == "bottom1"].sort_values(
+        ["Sharpe", "Annualized Return"],
         ascending=[False, False],
     ).iloc[0]
     avg_corr = correlation_df.where(~np.eye(len(correlation_df), dtype=bool)).stack().mean()
@@ -515,6 +621,11 @@ def build_diagnostics_summary(
                 f"Highest-scoring Top-1 model diagnostics row: {best_top1_model_row['model']} | "
                 f"AnnRet {best_top1_model_row['Top-1 Annualized Return'] * 100:.1f}% | "
                 f"Sharpe {best_top1_model_row['Top-1 Sharpe']:.2f}"
+            ),
+            (
+                f"Best holdout Bottom-1 selector: {best_bottom1['model']} | "
+                f"AnnRet {best_bottom1['Annualized Return'] * 100:.1f}% | "
+                f"Sharpe {best_bottom1['Sharpe']:.2f}"
             ),
             f"Average pairwise prediction correlation: {avg_corr:.3f}",
         ]
@@ -757,7 +868,7 @@ def run_pipeline(
     (output_dir / "diagnostics_summary.txt").write_text(diagnostics_summary, encoding="utf-8")
     log(
         "Best holdout Top-1 selector: "
-        f"{top_selection_df.sort_values(['Sharpe','Annualized Return'], ascending=[False, False]).iloc[0]['model']}"
+        f"{top_selection_df[top_selection_df['selection']=='top1'].sort_values(['Sharpe','Annualized Return'], ascending=[False, False]).iloc[0]['model']}"
     )
     log(
         "Average pairwise prediction correlation: "
@@ -771,15 +882,16 @@ def run_pipeline(
     log("Saving PnL plot")
     set_progress(90)
     plot_path = output_dir / "pnl_curves.png"
-    ranked_models = leaderboard_df[leaderboard_df["model"] != "Equal-weight"]["model"].tolist()
+    ranked_models = leaderboard_df[leaderboard_df["selection"] == "top1"]["display_name"].tolist()
     plotted_models = ranked_models[:6]
-    if live_pred_col not in plotted_models:
-        plotted_models = [live_pred_col, *plotted_models[:5]]
+    live_display_name = f"{live_pred_col} Top-1"
+    if live_display_name not in plotted_models:
+        plotted_models = [live_display_name, *plotted_models[:5]]
     plotted_models = list(dict.fromkeys(plotted_models))
     plt.figure(figsize=(12, 6))
     for model_name in [*plotted_models, "Equal-weight"]:
         curve_df = holdout_curves[model_name]
-        is_selected = model_name == live_pred_col
+        is_selected = model_name == live_display_name
         plt.plot(
             curve_df["Date"],
             curve_df["cum_ann"],
@@ -803,7 +915,7 @@ def run_pipeline(
     build_correlation_heatmap(
         correlation_df=correlation_df,
         output_path=heatmap_path,
-        ranked_models=ranked_models,
+        ranked_models=[name.replace(" Top-1", "") for name in ranked_models],
         live_pred_col=live_pred_col,
     )
 
