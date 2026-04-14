@@ -161,6 +161,85 @@ def compute_equal_weight_pnl(
     return pd.DataFrame(rows).sort_values("Date")
 
 
+def compute_top_k_excess_vs_equal_weight_pnl(
+    df: pd.DataFrame,
+    pred_col: str,
+    transaction_loss_pct: float = 0.0,
+    k: int = 1,
+    rebalance_days: int = 1,
+) -> pd.DataFrame:
+    """Daily excess PnL of Top-k versus equal-weight benchmark."""
+    top_df = compute_top_k_pnl(
+        df,
+        pred_col=pred_col,
+        transaction_loss_pct=transaction_loss_pct,
+        k=k,
+        rebalance_days=rebalance_days,
+    )
+    eq_df = compute_equal_weight_pnl(df, transaction_loss_pct=transaction_loss_pct)
+    merged = top_df.merge(
+        eq_df[["Date", "pnl", "gross_return"]],
+        on="Date",
+        suffixes=("", "_eq"),
+    )
+    merged["pnl"] = merged["pnl"] - merged["pnl_eq"]
+    merged["gross_return"] = merged["gross_return"] - merged["gross_return_eq"]
+    return merged[["Date", "pnl", "gross_return", "turnover", "trade_count", "avg_selected_score"]]
+
+
+def compute_top_bottom_spread_pnl(
+    df: pd.DataFrame,
+    pred_col: str,
+    transaction_loss_pct: float = 0.0,
+    k: int = 1,
+    rebalance_days: int = 1,
+) -> pd.DataFrame:
+    """Daily long-top-k minus short-bottom-k PnL."""
+    rows = []
+    transaction_loss = transaction_loss_pct / 100.0
+    previous_weights: dict[str, float] = {}
+    current_weights: dict[str, float] = {}
+    held_long_pairs: list[str] = []
+    held_short_pairs: list[str] = []
+    held_avg_score = np.nan
+
+    for idx, (d, grp) in enumerate(df.groupby("Date", sort=True)):
+        should_rebalance = (idx % rebalance_days == 0) or not current_weights
+        if should_rebalance:
+            ranked = grp.sort_values(pred_col, ascending=False)
+            long_side = ranked.head(k)
+            short_side = ranked.tail(k)
+            long_weight = 1.0 / len(long_side)
+            short_weight = -1.0 / len(short_side)
+            current_weights = {pair: long_weight for pair in long_side["pair"]}
+            current_weights.update({pair: short_weight for pair in short_side["pair"]})
+            held_long_pairs = list(long_side["pair"])
+            held_short_pairs = list(short_side["pair"])
+            held_avg_score = float(long_side[pred_col].mean() - short_side[pred_col].mean())
+
+        grp_indexed = grp.set_index("pair")
+        long_rows = grp_indexed.reindex(held_long_pairs).dropna(subset=["next_ret"]).reset_index()
+        short_rows = grp_indexed.reindex(held_short_pairs).dropna(subset=["next_ret"]).reset_index()
+        long_return = float(sum(current_weights.get(pair, 0.0) * next_ret for pair, next_ret in zip(long_rows["pair"], long_rows["next_ret"])))
+        short_return = float(sum(current_weights.get(pair, 0.0) * next_ret for pair, next_ret in zip(short_rows["pair"], short_rows["next_ret"])))
+        gross_return = long_return + short_return
+        turnover = _portfolio_turnover(previous_weights, current_weights) if should_rebalance else 0.0
+        pnl = gross_return - (transaction_loss * turnover)
+        rows.append(
+            {
+                "Date": d,
+                "pnl": pnl,
+                "gross_return": gross_return,
+                "turnover": turnover,
+                "trade_count": int(len(current_weights)),
+                "avg_selected_score": held_avg_score,
+            }
+        )
+        previous_weights = current_weights.copy()
+
+    return pd.DataFrame(rows).sort_values("Date")
+
+
 def cumulative_curve(df: pd.DataFrame) -> pd.DataFrame:
     """Convert daily pnl into cumulative return curve."""
     out = df.copy()
@@ -186,6 +265,9 @@ def perf_stats(df: pd.DataFrame, trading_days_per_year: int) -> dict[str, float]
     cum = (1 + pnl).prod() - 1
     n_periods = len(pnl)
     ann_ret = (1 + cum) ** (trading_days_per_year / n_periods) - 1 if n_periods else np.nan
+    gross = df["gross_return"].values if "gross_return" in df.columns else pnl
+    gross_cum = (1 + gross).prod() - 1
+    gross_ann_ret = (1 + gross_cum) ** (trading_days_per_year / n_periods) - 1 if n_periods else np.nan
     ann_vol = pnl.std() * np.sqrt(trading_days_per_year)
     sharpe = ann_ret / ann_vol if ann_vol > 0 else np.nan
     avg_turnover = float(df["turnover"].mean()) if "turnover" in df.columns and not df.empty else np.nan
@@ -198,6 +280,8 @@ def perf_stats(df: pd.DataFrame, trading_days_per_year: int) -> dict[str, float]
         else np.nan
     )
     return {
+        "Gross Annualized Return": gross_ann_ret,
+        "Gross Cumulative Return": gross_cum,
         "Annualized Return": ann_ret,
         "Annualized Vol": ann_vol,
         "Sharpe": sharpe,

@@ -112,20 +112,29 @@ def build_feature_dataset(
     tidy["Date"] = pd.to_datetime(tidy["Date"], utc=True)
     tidy = tidy.sort_values(["pair", "Date"]).reset_index(drop=True)
 
-    log("Computing base return, volatility, and momentum features")
+    log("Computing base simple-return, volatility, and momentum features")
     df = tidy.copy()
-    df["log_close"] = np.log(df["Close"])
-    df["log_ret"] = df.groupby("pair")["log_close"].diff()
+    df["ret1"] = df.groupby("pair")["Close"].pct_change()
     df["vol30"] = (
-        df.groupby("pair")["log_ret"]
+        df.groupby("pair")["ret1"]
         .rolling(30)
         .std()
         .reset_index(level=0, drop=True)
     )
-    df["mom5"] = df.groupby("pair")["log_close"].diff(5)
-    df["mom10"] = df.groupby("pair")["log_close"].diff(10)
+    df["mom5"] = (
+        df.groupby("pair")["ret1"]
+        .rolling(5, min_periods=5)
+        .sum()
+        .reset_index(level=0, drop=True)
+    )
+    df["mom10"] = (
+        df.groupby("pair")["ret1"]
+        .rolling(10, min_periods=10)
+        .sum()
+        .reset_index(level=0, drop=True)
+    )
 
-    wide_ret = df.pivot(index="Date", columns="pair", values="log_ret").add_prefix("ret_")
+    wide_ret = df.pivot(index="Date", columns="pair", values="ret1").add_prefix("ret_")
     wide_vol30 = df.pivot(index="Date", columns="pair", values="vol30").add_prefix("vol30_")
     wide_mom5 = df.pivot(index="Date", columns="pair", values="mom5").add_prefix("mom5_")
     wide_mom10 = df.pivot(index="Date", columns="pair", values="mom10").add_prefix("mom10_")
