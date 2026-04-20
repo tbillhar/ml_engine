@@ -14,6 +14,7 @@ from src.config import (
     HORIZON,
     HOLDOUT_DAYS,
     LIVE_MODEL,
+    MODEL_ROUTER_CANDIDATES,
     REBALANCE_DAYS,
     RETRAIN_DETERIORATION_LOOKBACK_DAYS,
     RETRAIN_DETERIORATION_MAX_AVG_EV,
@@ -127,6 +128,12 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         default=SPECIALIST_ENSEMBLE_MEMBERS,
         help="Model names to combine in the rank-based specialist ensemble.",
+    )
+    parser.add_argument(
+        "--model-router-candidates",
+        nargs="+",
+        default=MODEL_ROUTER_CANDIDATES,
+        help="Model names eligible for sticky specialist routing.",
     )
     parser.add_argument(
         "--specialist-weighting-mode",
@@ -253,6 +260,7 @@ def main() -> None:
                 live_model=params["live_model"],
                 specialist_weighting_mode=args.specialist_weighting_mode,
                 specialist_ensemble_models=args.specialist_ensemble_members,
+                model_router_candidates=args.model_router_candidates,
                 specialist_weight_lookback_days=args.specialist_weight_lookback_days,
                 specialist_min_model_hold_days=args.specialist_min_model_hold_days,
                 specialist_switch_margin_min_avg_ev=args.specialist_switch_margin_min_avg_ev,

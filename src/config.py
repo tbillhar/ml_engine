@@ -16,6 +16,20 @@ SPECIALIST_ENSEMBLE_MEMBERS = [
     "rf_returns_momentum",
     "logreg_returns_momentum",
 ]
+MODEL_ROUTER_CANDIDATES = [
+    "ensemble",
+    "lgbm_deep",
+    "lgbm_deep_returns_momentum",
+    "lgbm_deep_corr_regime",
+    "lgbm_deep_volatility",
+    "rf",
+    "rf_returns_momentum",
+    "rf_corr_regime",
+    "logreg",
+    "logreg_returns_momentum",
+    "logreg_corr_regime",
+    "logreg_volatility",
+]
 SPECIALIST_WEIGHT_LOOKBACK_DAYS = 30
 SPECIALIST_MIN_MODEL_HOLD_DAYS = 5
 SPECIALIST_SWITCH_MARGIN_MIN_AVG_EV = 0.0

@@ -52,7 +52,8 @@ def compute_threshold_pnl(
                 "pnl": pnl,
                 "gross_return": gross_return,
                 "turnover": turnover,
-                "trade_count": trade_count,
+                "positions_held": trade_count,
+                "rebalance_count": 1,
                 "avg_selected_score": avg_selected_score,
             }
         )
@@ -95,7 +96,8 @@ def compute_top_k_pnl(
                 "pnl": pnl,
                 "gross_return": gross_return,
                 "turnover": turnover,
-                "trade_count": int(len(current_weights)),
+                "positions_held": int(len(current_weights)),
+                "rebalance_count": int(should_rebalance),
                 "avg_selected_score": held_avg_score,
             }
         )
@@ -145,7 +147,8 @@ def compute_top_quantile_pnl(
                 "pnl": pnl,
                 "gross_return": gross_return,
                 "turnover": turnover,
-                "trade_count": int(len(chosen)),
+                "positions_held": int(len(chosen)),
+                "rebalance_count": 1,
                 "avg_selected_score": float(chosen[pred_col].mean()),
             }
         )
@@ -172,7 +175,8 @@ def compute_equal_weight_pnl(
                 "pnl": pnl,
                 "gross_return": float(grp["next_ret"].mean()),
                 "turnover": turnover,
-                "trade_count": int(len(grp)),
+                "positions_held": int(len(grp)),
+                "rebalance_count": 1,
                 "avg_selected_score": np.nan,
             }
         )
@@ -203,7 +207,7 @@ def compute_top_k_excess_vs_equal_weight_pnl(
     )
     merged["pnl"] = merged["pnl"] - merged["pnl_eq"]
     merged["gross_return"] = merged["gross_return"] - merged["gross_return_eq"]
-    return merged[["Date", "pnl", "gross_return", "turnover", "trade_count", "avg_selected_score"]]
+    return merged[["Date", "pnl", "gross_return", "turnover", "positions_held", "rebalance_count", "avg_selected_score"]]
 
 
 def compute_bottom_k_excess_vs_equal_weight_pnl(
@@ -229,7 +233,7 @@ def compute_bottom_k_excess_vs_equal_weight_pnl(
     )
     merged["pnl"] = merged["pnl"] - merged["pnl_eq"]
     merged["gross_return"] = merged["gross_return"] - merged["gross_return_eq"]
-    return merged[["Date", "pnl", "gross_return", "turnover", "trade_count", "avg_selected_score"]]
+    return merged[["Date", "pnl", "gross_return", "turnover", "positions_held", "rebalance_count", "avg_selected_score"]]
 
 
 def compute_top_bottom_spread_pnl(
@@ -276,7 +280,8 @@ def compute_top_bottom_spread_pnl(
                 "pnl": pnl,
                 "gross_return": gross_return,
                 "turnover": turnover,
-                "trade_count": int(len(current_weights)),
+                "positions_held": int(len(current_weights)),
+                "rebalance_count": int(should_rebalance),
                 "avg_selected_score": held_avg_score,
             }
         )
@@ -337,9 +342,10 @@ def perf_stats(df: pd.DataFrame, trading_days_per_year: int) -> dict[str, float]
     ann_vol = pnl.std() * np.sqrt(trading_days_per_year)
     sharpe = ann_ret / ann_vol if ann_vol > 0 else np.nan
     avg_turnover = float(df["turnover"].mean()) if "turnover" in df.columns and not df.empty else np.nan
-    avg_trade_count = float(df["trade_count"].mean()) if "trade_count" in df.columns and not df.empty else np.nan
-    trade_days = int((df["trade_count"] > 0).sum()) if "trade_count" in df.columns else 0
-    trade_rate = trade_days / n_periods if n_periods else np.nan
+    avg_positions_held = float(df["positions_held"].mean()) if "positions_held" in df.columns and not df.empty else np.nan
+    avg_rebalances_per_day = float(df["rebalance_count"].mean()) if "rebalance_count" in df.columns and not df.empty else np.nan
+    rebalance_days = int((df["rebalance_count"] > 0).sum()) if "rebalance_count" in df.columns else 0
+    rebalance_rate = rebalance_days / n_periods if n_periods else np.nan
     avg_selected_score = (
         float(df["avg_selected_score"].dropna().mean())
         if "avg_selected_score" in df.columns and not df["avg_selected_score"].dropna().empty
@@ -353,7 +359,8 @@ def perf_stats(df: pd.DataFrame, trading_days_per_year: int) -> dict[str, float]
         "Sharpe": sharpe,
         "Cumulative Return": cum,
         "Avg Turnover": avg_turnover,
-        "Avg Trades/Day": avg_trade_count,
-        "Trade Rate": trade_rate,
+        "Avg Positions Held": avg_positions_held,
+        "Avg Rebalances/Day": avg_rebalances_per_day,
+        "Rebalance Rate": rebalance_rate,
         "Avg Selected Score": avg_selected_score,
     }

@@ -54,6 +54,30 @@ def numeric_prediction_columns(df: pd.DataFrame) -> list[str]:
     ]
 
 
+RETURN_COLUMNS = {
+    "Gross Annualized Return",
+    "Gross Cumulative Return",
+    "Annualized Return",
+    "Annualized Vol",
+    "Cumulative Return",
+    "Excess vs Equal-weight Annualized Return",
+    "Excess vs Equal-weight Cumulative Return",
+    "Top1-Bottom1 Annualized Return",
+    "Top1-Bottom1 Cumulative Return",
+    "Bottom1-Top1 Annualized Return",
+    "Bottom1-Top1 Cumulative Return",
+}
+
+
+def formatted_performance_summary_csv(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy of the performance summary with return-like columns rendered as percentages."""
+    out = df.copy()
+    for col in out.columns:
+        if col in RETURN_COLUMNS:
+            out[col] = out[col].map(lambda value: round(float(value) * 100.0, 1) if pd.notna(value) else np.nan)
+    return out
+
+
 def build_score_bucket_diagnostics(pred_df: pd.DataFrame, model_cols: list[str]) -> pd.DataFrame:
     """Summarize score buckets and realized outcomes by model."""
     rows: list[dict[str, float | int | str]] = []
@@ -147,6 +171,7 @@ def build_ensemble_benefit(
 
 def diagnostics_guide_text(
     specialist_ensemble_models: list[str] | None = None,
+    model_router_candidates: list[str] | None = None,
     specialist_weight_lookback_days: int | None = None,
     rebalance_days: int | None = None,
     specialist_weighting_mode: str | None = None,
@@ -162,6 +187,11 @@ def diagnostics_guide_text(
         ", ".join(specialist_ensemble_models)
         if specialist_ensemble_models
         else "configured specialist members"
+    )
+    router_candidates_text = (
+        ", ".join(model_router_candidates)
+        if model_router_candidates
+        else "configured router candidates"
     )
     lookback_text = (
         str(specialist_weight_lookback_days)
@@ -205,7 +235,7 @@ def diagnostics_guide_text(
             "- Shows all model Top-1 holdout results in the main leaderboard and plots the top performers graphically.",
             "",
             "Key files",
-            "- performance_summary.csv: holdout Top-1 leaderboard for all models plus Equal-weight.",
+            "- performance_summary.csv: holdout Top-1/Bottom-1 leaderboard for all models plus Equal-weight.",
             "- model_diagnostics.csv: score dispersion diagnostics plus Top-1 net, gross, excess-vs-equal-weight, and top1-minus-bottom1 economics for all models.",
             "- model_prediction_correlation.csv: holdout prediction correlation matrix.",
             "- top1_pick_overlap.csv: fraction of holdout dates where each pair of models picked the same Top-1 pair.",
@@ -218,7 +248,7 @@ def diagnostics_guide_text(
             (
                 f"- pred_specialist_ensemble: daily rank-percentile blend of {specialist_text}, "
                 f"weighted by trailing realized Top-1 success over the prior {lookback_text} out-of-sample dates "
-                f"using '{weighting_mode_text}' mode. Sticky settings: min hold {min_hold_text}, "
+                f"using '{weighting_mode_text}' mode. Sticky router candidates: {router_candidates_text}. Sticky settings: min hold {min_hold_text}, "
                 f"switch margin {switch_margin_text}, require positive EV {positive_ev_text}."
             ),
             f"- Rebalancing: Top-1 strategies rebalance every {rebalance_text} day(s).",
@@ -644,6 +674,7 @@ def run_pipeline(
     live_model: str,
     specialist_weighting_mode: str,
     specialist_ensemble_models: list[str],
+    model_router_candidates: list[str],
     specialist_weight_lookback_days: int,
     specialist_min_model_hold_days: int,
     specialist_switch_margin_min_avg_ev: float,
@@ -707,6 +738,7 @@ def run_pipeline(
         live_model=live_model,
         specialist_weighting_mode=specialist_weighting_mode,
         specialist_ensemble_models=specialist_ensemble_models,
+        model_router_candidates=model_router_candidates,
         specialist_weight_lookback_days=specialist_weight_lookback_days,
         specialist_min_model_hold_days=specialist_min_model_hold_days,
         specialist_switch_margin_min_avg_ev=specialist_switch_margin_min_avg_ev,
@@ -751,7 +783,9 @@ def run_pipeline(
     )
     diagnostic_rows = []
     for model_col in model_cols:
-        top1_stats = leaderboard_df[leaderboard_df["model"] == model_col].iloc[0]
+        top1_stats = leaderboard_df[
+            (leaderboard_df["model"] == model_col) & (leaderboard_df["selection"] == "top1")
+        ].iloc[0]
         diagnostic_rows.append(
             {
                 "model": model_col,
@@ -802,6 +836,7 @@ def run_pipeline(
                 "live_prediction_column": live_pred_col,
                 "specialist_weighting_mode": specialist_weighting_mode,
                 "specialist_ensemble_members": "|".join(specialist_ensemble_models),
+                "model_router_candidates": "|".join(model_router_candidates),
                 "specialist_weight_lookback_days": specialist_weight_lookback_days,
                 "specialist_min_model_hold_days": specialist_min_model_hold_days,
                 "specialist_switch_margin_min_avg_ev": specialist_switch_margin_min_avg_ev,
@@ -841,10 +876,11 @@ def run_pipeline(
     model_switch_log_df.to_csv(output_dir / "model_switch_log.csv", index=False)
     model_diagnostics_df.to_csv(output_dir / "model_diagnostics.csv", index=False)
     ensemble_benefit_df.to_csv(output_dir / "ensemble_benefit.csv", index=False)
-    leaderboard_df.to_csv(output_dir / "performance_summary.csv", index=False)
+    formatted_performance_summary_csv(leaderboard_df).to_csv(output_dir / "performance_summary.csv", index=False)
     (output_dir / "diagnostics_guide.txt").write_text(
         diagnostics_guide_text(
             specialist_ensemble_models,
+            model_router_candidates,
             specialist_weight_lookback_days,
             rebalance_days,
             specialist_weighting_mode,

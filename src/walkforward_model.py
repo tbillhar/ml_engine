@@ -33,6 +33,20 @@ LIVE_MODEL_COLUMNS = {
     "logreg_corr_regime": "pred_logreg_corr_regime",
     "logreg_volatility": "pred_logreg_volatility",
 }
+ROUTER_CANDIDATE_COLUMNS = [
+    "pred_ensemble",
+    "pred_lgbm_deep",
+    "pred_lgbm_deep_returns_momentum",
+    "pred_lgbm_deep_corr_regime",
+    "pred_lgbm_deep_volatility",
+    "pred_rf",
+    "pred_rf_returns_momentum",
+    "pred_rf_corr_regime",
+    "pred_logreg",
+    "pred_logreg_returns_momentum",
+    "pred_logreg_corr_regime",
+    "pred_logreg_volatility",
+]
 
 META_COLUMNS = ["Date", "pair", "next_ret", "future_ret", "rel", "profit_target", "ev_target"]
 def make_xy(subdf: pd.DataFrame, date_list, feature_cols: list[str]):
@@ -265,6 +279,22 @@ def resolve_live_prediction_column(live_model: str) -> str:
     return LIVE_MODEL_COLUMNS[live_model]
 
 
+def resolve_router_candidate_columns(model_names: list[str]) -> list[str]:
+    """Map router candidate model names to concrete prediction columns."""
+    columns: list[str] = []
+    for model_name in model_names:
+        if model_name == "specialist_ensemble":
+            continue
+        if model_name not in LIVE_MODEL_COLUMNS:
+            raise ValueError(f"Unsupported MODEL_ROUTER_CANDIDATE '{model_name}'. Expected one of: {sorted(LIVE_MODEL_COLUMNS)}")
+        pred_col = LIVE_MODEL_COLUMNS[model_name]
+        if pred_col not in columns:
+            columns.append(pred_col)
+    if not columns:
+        raise ValueError("MODEL_ROUTER_CANDIDATES must resolve to at least one prediction column")
+    return columns
+
+
 def specialist_weights_from_history(
     member_top1_returns: dict[str, list[float]],
     ensemble_models: list[str],
@@ -386,6 +416,7 @@ def sticky_specialist_router_step(
 def add_specialist_ensemble_scores(
     test_sub: pd.DataFrame,
     specialist_ensemble_models: list[str],
+    model_router_candidates: list[str],
     specialist_weight_lookback_days: int,
     specialist_weighting_mode: str,
     specialist_min_model_hold_days: int,
@@ -396,19 +427,23 @@ def add_specialist_ensemble_scores(
     if len(specialist_ensemble_models) < 2:
         raise ValueError("SPECIALIST_ENSEMBLE_MEMBERS must contain at least two model names")
     ensemble_models = [f"pred_{name}" for name in specialist_ensemble_models]
+    router_models = resolve_router_candidate_columns(model_router_candidates)
     missing = [col for col in ensemble_models if col not in test_sub.columns]
     if missing:
         raise ValueError(f"Missing specialist ensemble prediction columns: {missing}")
+    missing_router = [col for col in router_models if col not in test_sub.columns]
+    if missing_router:
+        raise ValueError(f"Missing router candidate prediction columns: {missing_router}")
 
     test_sub = test_sub.copy()
     ranked_cols: dict[str, str] = {}
-    for model_col in ensemble_models:
+    for model_col in sorted(set(ensemble_models + router_models)):
         ranked_col = f"{model_col}__rankpct"
         ranked_cols[model_col] = ranked_col
         test_sub[ranked_col] = test_sub.groupby("Date")[model_col].rank(method="average", pct=True)
 
     date_order = sorted(test_sub["Date"].unique())
-    member_top1_returns: dict[str, list[float]] = {model_col: [] for model_col in ensemble_models}
+    member_top1_returns: dict[str, list[float]] = {model_col: [] for model_col in router_models}
     router_active_idx: int | None = None
     router_hold_days = 0
     test_sub["specialist_ensemble_active_model"] = ""
@@ -418,7 +453,7 @@ def add_specialist_ensemble_scores(
     for current_idx, current_date in enumerate(date_order):
         normalized_weights, raw_scores = specialist_weights_from_history(
             member_top1_returns=member_top1_returns,
-            ensemble_models=ensemble_models,
+            ensemble_models=router_models,
             specialist_weight_lookback_days=specialist_weight_lookback_days,
             specialist_weighting_mode=specialist_weighting_mode,
         )
@@ -431,7 +466,7 @@ def add_specialist_ensemble_scores(
                 switch_reason,
             ) = sticky_specialist_router_step(
                 raw_scores=raw_scores,
-                ensemble_models=ensemble_models,
+                ensemble_models=router_models,
                 previous_active_idx=router_active_idx,
                 previous_hold_days=router_hold_days,
                 specialist_min_model_hold_days=specialist_min_model_hold_days,
@@ -441,19 +476,20 @@ def add_specialist_ensemble_scores(
 
         date_mask = test_sub["Date"] == current_date
         weighted_score = np.zeros(int(date_mask.sum()), dtype=float)
-        for idx, model_col in enumerate(ensemble_models):
+        weighted_models = router_models if specialist_weighting_mode == "sticky_winner" else ensemble_models
+        for idx, model_col in enumerate(weighted_models):
             weighted_score += normalized_weights[idx] * test_sub.loc[date_mask, ranked_cols[model_col]].to_numpy()
         test_sub.loc[date_mask, "pred_specialist_ensemble"] = weighted_score
 
         date_slice = test_sub.loc[date_mask]
-        for model_col in ensemble_models:
+        for model_col in router_models:
             chosen_row = date_slice.sort_values(model_col, ascending=False).iloc[0]
             member_top1_returns[model_col].append(float(chosen_row["ev_target"]))
-        active_model = ensemble_models[router_active_idx] if router_active_idx is not None else ""
+        active_model = router_models[router_active_idx] if router_active_idx is not None else ""
         test_sub.loc[date_mask, "specialist_ensemble_active_model"] = active_model
         test_sub.loc[date_mask, "specialist_ensemble_switch_reason"] = switch_reason
         weight_parts = []
-        for idx, model_col in enumerate(ensemble_models):
+        for idx, model_col in enumerate(weighted_models):
             weight_parts.append(f"{model_col}={normalized_weights[idx]:.3f}")
         test_sub.loc[date_mask, "specialist_ensemble_weight_info"] = "|".join(weight_parts)
 
@@ -469,6 +505,7 @@ def run_walkforward_model(
     live_model: str,
     specialist_weighting_mode: str,
     specialist_ensemble_models: list[str],
+    model_router_candidates: list[str],
     specialist_weight_lookback_days: int,
     specialist_min_model_hold_days: int,
     specialist_switch_margin_min_avg_ev: float,
@@ -490,6 +527,7 @@ def run_walkforward_model(
     model_subsets = model_feature_subset_map(list(models))
     live_pred_col = resolve_live_prediction_column(live_model)
     specialist_prediction_cols = [f"pred_{name}" for name in specialist_ensemble_models]
+    router_prediction_cols = resolve_router_candidate_columns(model_router_candidates)
 
     all_dates = sorted(long_df["Date"].unique())
     total_oos_days = max(len(all_dates) - fit_days, 0)
@@ -499,9 +537,7 @@ def run_walkforward_model(
     prediction_cols = [f"pred_{name}" for name in models]
     prediction_cols.append("pred_ensemble")
     primary_weights = primary_ensemble_weights(list(models))
-    global_specialist_top1_returns: dict[str, list[float]] = {
-        model_col: [] for model_col in specialist_prediction_cols
-    }
+    global_specialist_top1_returns: dict[str, list[float]] = {model_col: [] for model_col in router_prediction_cols}
     router_active_idx: int | None = None
     router_hold_days = 0
     fit_start = 0
@@ -548,7 +584,7 @@ def run_walkforward_model(
             )
             specialist_weights, raw_scores = specialist_weights_from_history(
                 member_top1_returns=global_specialist_top1_returns,
-                ensemble_models=specialist_prediction_cols,
+                ensemble_models=router_prediction_cols if specialist_weighting_mode == "sticky_winner" else specialist_prediction_cols,
                 specialist_weight_lookback_days=specialist_weight_lookback_days,
                 specialist_weighting_mode=specialist_weighting_mode,
             )
@@ -561,7 +597,7 @@ def run_walkforward_model(
                     switch_reason,
                 ) = sticky_specialist_router_step(
                     raw_scores=raw_scores,
-                    ensemble_models=specialist_prediction_cols,
+                    ensemble_models=router_prediction_cols,
                     previous_active_idx=router_active_idx,
                     previous_hold_days=router_hold_days,
                     specialist_min_model_hold_days=specialist_min_model_hold_days,
@@ -569,17 +605,17 @@ def run_walkforward_model(
                     specialist_switch_require_positive_ev=specialist_switch_require_positive_ev,
                 )
             specialist_rank_sum = np.zeros(len(day_sub), dtype=float)
-            for idx, model_col in enumerate(specialist_prediction_cols):
+            weighted_models = router_prediction_cols if specialist_weighting_mode == "sticky_winner" else specialist_prediction_cols
+            for idx, model_col in enumerate(weighted_models):
                 rank_pct = day_sub[model_col].rank(method="average", pct=True).to_numpy()
                 specialist_rank_sum += specialist_weights[idx] * rank_pct
             day_sub["pred_specialist_ensemble"] = specialist_rank_sum
             day_sub["specialist_ensemble_active_model"] = (
-                specialist_prediction_cols[router_active_idx] if router_active_idx is not None else ""
+                router_prediction_cols[router_active_idx] if router_active_idx is not None else ""
             )
             day_sub["specialist_ensemble_switch_reason"] = switch_reason
             day_sub["specialist_ensemble_weight_info"] = "|".join(
-                f"{model_col}={specialist_weights[idx]:.3f}"
-                for idx, model_col in enumerate(specialist_prediction_cols)
+                f"{model_col}={specialist_weights[idx]:.3f}" for idx, model_col in enumerate(weighted_models)
             )
             day_sub["window_id"] = window_idx
             current_test_chunks.append(
@@ -597,7 +633,7 @@ def run_walkforward_model(
 
             trigger_row = day_sub.sort_values(live_pred_col, ascending=False).iloc[0]
             trigger_returns.append(float(trigger_row["ev_target"]))
-            for model_col in specialist_prediction_cols:
+            for model_col in router_prediction_cols:
                 chosen_row = day_sub.sort_values(model_col, ascending=False).iloc[0]
                 global_specialist_top1_returns[model_col].append(float(chosen_row["ev_target"]))
             days_into_test += 1
@@ -647,6 +683,7 @@ def run_walkforward_model(
             + (
                 f" via daily rank averaging with weighting_mode={specialist_weighting_mode} "
                 f"and trailing lookback={specialist_weight_lookback_days}; "
+                f"router_candidates={','.join(model_router_candidates)}; "
                 f"min_hold_days={specialist_min_model_hold_days}; "
                 f"switch_margin_min_avg_ev={specialist_switch_margin_min_avg_ev}; "
                 f"require_positive_ev={specialist_switch_require_positive_ev}"
@@ -704,6 +741,7 @@ def run_walkforward_model(
     pred_df = add_specialist_ensemble_scores(
         pred_df,
         specialist_ensemble_models,
+        model_router_candidates,
         specialist_weight_lookback_days,
         specialist_weighting_mode,
         specialist_min_model_hold_days,

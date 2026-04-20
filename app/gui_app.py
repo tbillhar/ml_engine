@@ -46,6 +46,7 @@ from src.config import (
     HORIZON,
     HOLDOUT_DAYS,
     LIVE_MODEL,
+    MODEL_ROUTER_CANDIDATES,
     REBALANCE_DAYS,
     RAW_DATA_SOURCE,
     RAW_DATA_FILENAME,
@@ -88,6 +89,7 @@ class PipelineWorker(QObject):
         live_model: str,
         specialist_weighting_mode: str,
         specialist_ensemble_members: list[str],
+        model_router_candidates: list[str],
         specialist_weight_lookback_days: int,
         specialist_min_model_hold_days: int,
         specialist_switch_margin_min_avg_ev: float,
@@ -109,6 +111,7 @@ class PipelineWorker(QObject):
         self.live_model = live_model
         self.specialist_weighting_mode = specialist_weighting_mode
         self.specialist_ensemble_members = specialist_ensemble_members
+        self.model_router_candidates = model_router_candidates
         self.specialist_weight_lookback_days = specialist_weight_lookback_days
         self.specialist_min_model_hold_days = specialist_min_model_hold_days
         self.specialist_switch_margin_min_avg_ev = specialist_switch_margin_min_avg_ev
@@ -132,6 +135,7 @@ class PipelineWorker(QObject):
                 live_model=self.live_model,
                 specialist_weighting_mode=self.specialist_weighting_mode,
                 specialist_ensemble_models=self.specialist_ensemble_members,
+                model_router_candidates=self.model_router_candidates,
                 specialist_weight_lookback_days=self.specialist_weight_lookback_days,
                 specialist_min_model_hold_days=self.specialist_min_model_hold_days,
                 specialist_switch_margin_min_avg_ev=self.specialist_switch_margin_min_avg_ev,
@@ -252,6 +256,7 @@ class FXPipelineWindow(QMainWindow):
         )
         self.specialist_weighting_mode_input.setCurrentText(SPECIALIST_WEIGHTING_MODE)
         self.specialist_members_input = QLineEdit(",".join(SPECIALIST_ENSEMBLE_MEMBERS))
+        self.model_router_candidates_input = QLineEdit(",".join(MODEL_ROUTER_CANDIDATES))
         self.specialist_lookback_input = QLineEdit(str(SPECIALIST_WEIGHT_LOOKBACK_DAYS))
         self.specialist_min_hold_input = QLineEdit(str(SPECIALIST_MIN_MODEL_HOLD_DAYS))
         self.specialist_switch_margin_input = QLineEdit(str(SPECIALIST_SWITCH_MARGIN_MIN_AVG_EV))
@@ -324,9 +329,13 @@ class FXPipelineWindow(QMainWindow):
         self.diagnostics_guide.setPlainText(
             diagnostics_guide_text(
                 SPECIALIST_ENSEMBLE_MEMBERS,
+                MODEL_ROUTER_CANDIDATES,
                 SPECIALIST_WEIGHT_LOOKBACK_DAYS,
                 REBALANCE_DAYS,
                 SPECIALIST_WEIGHTING_MODE,
+                SPECIALIST_MIN_MODEL_HOLD_DAYS,
+                SPECIALIST_SWITCH_MARGIN_MIN_AVG_EV,
+                SPECIALIST_SWITCH_REQUIRE_POSITIVE_EV,
                 RETRAIN_DETERIORATION_LOOKBACK_DAYS,
                 RETRAIN_DETERIORATION_MIN_WIN_RATE,
                 RETRAIN_DETERIORATION_MAX_AVG_EV,
@@ -363,6 +372,7 @@ class FXPipelineWindow(QMainWindow):
         params_form.addRow("HOLDOUT_DAYS", self.holdout_days_input)
         params_form.addRow("SPECIALIST_WEIGHTING_MODE", self.specialist_weighting_mode_input)
         params_form.addRow("SPECIALIST_ENSEMBLE_MEMBERS", self.specialist_members_input)
+        params_form.addRow("MODEL_ROUTER_CANDIDATES", self.model_router_candidates_input)
         params_form.addRow("SPECIALIST_WEIGHT_LOOKBACK_DAYS", self.specialist_lookback_input)
         params_form.addRow("SPECIALIST_MIN_MODEL_HOLD_DAYS", self.specialist_min_hold_input)
         params_form.addRow("SPECIALIST_SWITCH_MARGIN_MIN_AVG_EV", self.specialist_switch_margin_input)
@@ -599,8 +609,15 @@ class FXPipelineWindow(QMainWindow):
                 for item in self.specialist_members_input.text().split(",")
                 if item.strip()
             ]
+            model_router_candidates = [
+                item.strip()
+                for item in self.model_router_candidates_input.text().split(",")
+                if item.strip()
+            ]
             if len(specialist_ensemble_members) < 2:
                 raise ValueError("SPECIALIST_ENSEMBLE_MEMBERS must contain at least two model names")
+            if not model_router_candidates:
+                raise ValueError("MODEL_ROUTER_CANDIDATES must contain at least one model name")
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Invalid Input", str(exc))
             return
@@ -615,6 +632,7 @@ class FXPipelineWindow(QMainWindow):
         self.diagnostics_guide.setPlainText(
             diagnostics_guide_text(
                 specialist_ensemble_members,
+                model_router_candidates,
                 specialist_weight_lookback_days,
                 rebalance_days,
                 specialist_weighting_mode,
@@ -641,6 +659,7 @@ class FXPipelineWindow(QMainWindow):
             live_model=live_model,
             specialist_weighting_mode=specialist_weighting_mode,
             specialist_ensemble_members=specialist_ensemble_members,
+            model_router_candidates=model_router_candidates,
             specialist_weight_lookback_days=specialist_weight_lookback_days,
             specialist_min_model_hold_days=specialist_min_model_hold_days,
             specialist_switch_margin_min_avg_ev=specialist_switch_margin_min_avg_ev,
