@@ -172,6 +172,7 @@ def build_ensemble_benefit(
 def diagnostics_guide_text(
     specialist_ensemble_models: list[str] | None = None,
     model_router_candidates: list[str] | None = None,
+    model_fit_windows: list[int] | None = None,
     specialist_weight_lookback_days: int | None = None,
     rebalance_days: int | None = None,
     specialist_weighting_mode: str | None = None,
@@ -192,6 +193,11 @@ def diagnostics_guide_text(
         ", ".join(model_router_candidates)
         if model_router_candidates
         else "configured router candidates"
+    )
+    fit_windows_text = (
+        ", ".join(str(window) for window in model_fit_windows)
+        if model_fit_windows
+        else "configured fit windows"
     )
     lookback_text = (
         str(specialist_weight_lookback_days)
@@ -230,6 +236,7 @@ def diagnostics_guide_text(
         [
             "Pipeline behavior",
             "- Trains all models on each walk-forward fit window.",
+            f"- Generates model variants across fit windows: {fit_windows_text}.",
             "- Generates predictions for all models on every test/holdout date.",
             "- Evaluates all models diagnostically on the holdout slice.",
             "- Shows all model Top-1 holdout results in the main leaderboard and plots the top performers graphically.",
@@ -790,6 +797,7 @@ def build_diagnostics_summary(
 def run_pipeline(
     csv_path: str,
     fit_days: int,
+    model_fit_windows: list[int],
     step_days: int,
     rebalance_days: int,
     horizon: int,
@@ -845,6 +853,7 @@ def run_pipeline(
     log(
         "Running walk-forward models "
         f"(fit={fit_days}, "
+        f"model_fit_windows={','.join(str(window) for window in model_fit_windows)}, "
         f"step={step_days}, rebalance_days={rebalance_days}, holdout_days={holdout_days}, "
         f"live_model={live_model}, live_decision_mode=top1, "
         f"specialist_weighting_mode={specialist_weighting_mode}, "
@@ -858,6 +867,7 @@ def run_pipeline(
     pred_df, window_diag_df = run_walkforward_model(
         long_df,
         fit_days=fit_days,
+        model_fit_windows=model_fit_windows,
         step_days=step_days,
         holdout_days=holdout_days,
         live_model=live_model,
@@ -961,6 +971,7 @@ def run_pipeline(
             {
                 "csv_path": csv_path,
                 "fit_days": fit_days,
+                "model_fit_windows": "|".join(str(window) for window in model_fit_windows),
                 "step_days": step_days,
                 "rebalance_days": rebalance_days,
                 "horizon": horizon,
@@ -1021,6 +1032,7 @@ def run_pipeline(
         diagnostics_guide_text(
             specialist_ensemble_models,
             model_router_candidates,
+            model_fit_windows,
             specialist_weight_lookback_days,
             rebalance_days,
             specialist_weighting_mode,

@@ -49,6 +49,32 @@ ROUTER_CANDIDATE_COLUMNS = [
 ]
 
 META_COLUMNS = ["Date", "pair", "next_ret", "future_ret", "rel", "profit_target", "ev_target"]
+
+
+def normalize_fit_windows(fit_days: int, model_fit_windows: list[int] | None) -> list[int]:
+    """Return sorted unique fit windows, always including the primary FIT_DAYS value."""
+    windows = [int(window) for window in (model_fit_windows or []) if int(window) > 0]
+    windows.append(int(fit_days))
+    return sorted(set(windows))
+
+
+def prediction_column_name(model_name: str, fit_window: int, primary_fit_days: int) -> str:
+    """Return the prediction column name for a model/window variant."""
+    base_col = f"pred_{model_name}"
+    return base_col if fit_window == primary_fit_days else f"{base_col}_fit{fit_window}"
+
+
+def model_name_from_prediction_column(pred_col: str, primary_fit_days: int) -> tuple[str, int]:
+    """Return base model name and fit window from a prediction column."""
+    if not pred_col.startswith("pred_"):
+        raise ValueError(f"Prediction column must start with 'pred_': {pred_col}")
+    name = pred_col.removeprefix("pred_")
+    if "_fit" in name:
+        base_name, fit_window_text = name.rsplit("_fit", 1)
+        return base_name, int(fit_window_text)
+    return name, primary_fit_days
+
+
 def make_xy(subdf: pd.DataFrame, date_list, feature_cols: list[str]):
     """Build sorted subset, design matrix, labels, and group sizes."""
     s = subdf[subdf["Date"].isin(date_list)].sort_values(["Date", "pair"])
@@ -279,15 +305,30 @@ def resolve_live_prediction_column(live_model: str) -> str:
     return LIVE_MODEL_COLUMNS[live_model]
 
 
-def resolve_router_candidate_columns(model_names: list[str]) -> list[str]:
+def resolve_router_candidate_columns(
+    model_names: list[str],
+    available_prediction_cols: list[str] | None = None,
+) -> list[str]:
     """Map router candidate model names to concrete prediction columns."""
+    if any(model_name.strip().lower() == "all" for model_name in model_names):
+        if available_prediction_cols is None:
+            return ROUTER_CANDIDATE_COLUMNS.copy()
+        return [
+            col
+            for col in available_prediction_cols
+            if col.startswith("pred_") and col != "pred_specialist_ensemble"
+        ]
+
     columns: list[str] = []
     for model_name in model_names:
         if model_name == "specialist_ensemble":
             continue
-        if model_name not in LIVE_MODEL_COLUMNS:
+        if model_name.startswith("pred_"):
+            pred_col = model_name
+        elif model_name not in LIVE_MODEL_COLUMNS:
             raise ValueError(f"Unsupported MODEL_ROUTER_CANDIDATE '{model_name}'. Expected one of: {sorted(LIVE_MODEL_COLUMNS)}")
-        pred_col = LIVE_MODEL_COLUMNS[model_name]
+        else:
+            pred_col = LIVE_MODEL_COLUMNS[model_name]
         if pred_col not in columns:
             columns.append(pred_col)
     if not columns:
@@ -429,7 +470,14 @@ def add_specialist_ensemble_scores(
     if len(specialist_ensemble_models) < 2:
         raise ValueError("SPECIALIST_ENSEMBLE_MEMBERS must contain at least two model names")
     ensemble_models = [f"pred_{name}" for name in specialist_ensemble_models]
-    router_models = resolve_router_candidate_columns(model_router_candidates)
+    router_models = resolve_router_candidate_columns(
+        model_router_candidates,
+        available_prediction_cols=[
+            col
+            for col in test_sub.columns
+            if col.startswith("pred_") and pd.api.types.is_numeric_dtype(test_sub[col])
+        ],
+    )
     missing = [col for col in ensemble_models if col not in test_sub.columns]
     if missing:
         raise ValueError(f"Missing specialist ensemble prediction columns: {missing}")
@@ -506,6 +554,7 @@ def add_specialist_ensemble_scores(
 def run_walkforward_model(
     long_df: pd.DataFrame,
     fit_days: int,
+    model_fit_windows: list[int],
     step_days: int,
     holdout_days: int,
     live_model: str,
@@ -530,18 +579,31 @@ def run_walkforward_model(
     feature_cols = [c for c in long_df.columns if c not in META_COLUMNS]
     subset_cols = feature_subset_columns(feature_cols)
     models = build_models()
+    fit_windows = normalize_fit_windows(fit_days, model_fit_windows)
+    max_fit_days = max(fit_windows)
     model_subsets = model_feature_subset_map(list(models))
     live_pred_col = resolve_live_prediction_column(live_model)
     specialist_prediction_cols = [f"pred_{name}" for name in specialist_ensemble_models]
-    router_prediction_cols = resolve_router_candidate_columns(model_router_candidates)
+    model_prediction_cols = [
+        prediction_column_name(model_name, fit_window, fit_days)
+        for fit_window in fit_windows
+        for model_name in models
+    ]
+    ensemble_prediction_cols = [
+        prediction_column_name("ensemble", fit_window, fit_days)
+        for fit_window in fit_windows
+    ]
+    prediction_cols = [*model_prediction_cols, *ensemble_prediction_cols]
+    router_prediction_cols = resolve_router_candidate_columns(
+        model_router_candidates,
+        available_prediction_cols=prediction_cols,
+    )
 
     all_dates = sorted(long_df["Date"].unique())
-    total_oos_days = max(len(all_dates) - fit_days, 0)
+    total_oos_days = max(len(all_dates) - max_fit_days, 0)
     holdout_start_oos_idx = max(total_oos_days - holdout_days, 0)
     all_test_chunks = []
     window_diagnostics = []
-    prediction_cols = [f"pred_{name}" for name in models]
-    prediction_cols.append("pred_ensemble")
     primary_weights = primary_ensemble_weights(list(models))
     global_specialist_top1_returns: dict[str, list[float]] = {model_col: [] for model_col in router_prediction_cols}
     router_active_idx: int | None = None
@@ -550,24 +612,26 @@ def run_walkforward_model(
     window_idx = 0
     processed_oos_days = 0
     holdout_started = False
-    while fit_start + fit_days < len(all_dates):
-        fit_dates = all_dates[fit_start:fit_start + fit_days]
-        train_sub, _, y_train, _ = make_xy(long_df, fit_dates, feature_cols)
+    while fit_start + max_fit_days < len(all_dates):
+        train_end_idx = fit_start + max_fit_days
         window_idx += 1
         log(
             f"Training window {window_idx} "
-            f"(fit dates: {len(fit_dates)}, cadence step: {step_days}, "
-            f"live model: {live_model})"
+            f"(fit windows: {','.join(str(window) for window in fit_windows)}, "
+            f"cadence step: {step_days}, live model: {live_model})"
         )
-        fitted_models: dict[str, object] = {}
-        for model_name, base_model in models.items():
-            subset_name = model_subsets[model_name]
-            model_feature_cols = subset_cols[subset_name]
-            if not model_feature_cols:
-                raise ValueError(f"Feature subset '{subset_name}' for model '{model_name}' is empty")
-            model = clone(base_model)
-            model.fit(train_sub[model_feature_cols], y_train)
-            fitted_models[model_name] = model
+        fitted_models: dict[tuple[str, int], object] = {}
+        for fit_window in fit_windows:
+            fit_dates = all_dates[train_end_idx - fit_window:train_end_idx]
+            train_sub, _, y_train, _ = make_xy(long_df, fit_dates, feature_cols)
+            for model_name, base_model in models.items():
+                subset_name = model_subsets[model_name]
+                model_feature_cols = subset_cols[subset_name]
+                if not model_feature_cols:
+                    raise ValueError(f"Feature subset '{subset_name}' for model '{model_name}' is empty")
+                model = clone(base_model)
+                model.fit(train_sub[model_feature_cols], y_train)
+                fitted_models[(model_name, fit_window)] = model
 
         current_test_chunks = []
         trigger_returns: list[float] = []
@@ -575,19 +639,22 @@ def run_walkforward_model(
         trigger_avg_ev = np.nan
         trigger_win_rate = np.nan
         retrain_reason = "end_of_data"
-        next_date_idx = fit_start + fit_days
+        next_date_idx = train_end_idx
 
         while next_date_idx < len(all_dates):
             current_date = all_dates[next_date_idx]
             day_sub = long_df[long_df["Date"] == current_date].sort_values(["Date", "pair"]).copy()
-            for model_name, model in fitted_models.items():
+            for (model_name, fit_window), model in fitted_models.items():
                 subset_name = model_subsets[model_name]
                 model_feature_cols = subset_cols[subset_name]
-                day_sub[f"pred_{model_name}"] = predict_positive_scores(model, day_sub[model_feature_cols])
-            day_sub["pred_ensemble"] = sum(
-                day_sub[f"pred_{model_name}"] * primary_weights[model_name]
-                for model_name in primary_weights
-            )
+                pred_col = prediction_column_name(model_name, fit_window, fit_days)
+                day_sub[pred_col] = predict_positive_scores(model, day_sub[model_feature_cols])
+            for fit_window in fit_windows:
+                ensemble_col = prediction_column_name("ensemble", fit_window, fit_days)
+                day_sub[ensemble_col] = sum(
+                    day_sub[prediction_column_name(model_name, fit_window, fit_days)] * primary_weights[model_name]
+                    for model_name in primary_weights
+                )
             specialist_weights, raw_scores = specialist_weights_from_history(
                 member_top1_returns=global_specialist_top1_returns,
                 ensemble_models=router_prediction_cols if specialist_weighting_mode == "sticky_winner" else specialist_prediction_cols,
@@ -706,14 +773,27 @@ def run_walkforward_model(
             f"trigger_win_rate={trigger_win_rate if not np.isnan(trigger_win_rate) else float('nan'):.3f}"
         )
 
-        for model_name in models:
+        for fit_window in fit_windows:
+            for model_name in models:
+                window_diagnostics.append(
+                    {
+                        "window_id": window_idx,
+                        "model": prediction_column_name(model_name, fit_window, fit_days),
+                        "fit_dates": fit_window,
+                        "test_dates": days_into_test,
+                        "feature_subset": model_subsets[model_name],
+                        "retrain_reason": retrain_reason,
+                        "trigger_avg_ev": trigger_avg_ev,
+                        "trigger_win_rate": trigger_win_rate,
+                    }
+                )
             window_diagnostics.append(
                 {
                     "window_id": window_idx,
-                    "model": model_name,
-                    "fit_dates": len(fit_dates),
+                    "model": prediction_column_name("ensemble", fit_window, fit_days),
+                    "fit_dates": fit_window,
                     "test_dates": days_into_test,
-                    "feature_subset": model_subsets[model_name],
+                    "feature_subset": "broad_fixed_blend",
                     "retrain_reason": retrain_reason,
                     "trigger_avg_ev": trigger_avg_ev,
                     "trigger_win_rate": trigger_win_rate,
@@ -722,20 +802,8 @@ def run_walkforward_model(
         window_diagnostics.append(
             {
                 "window_id": window_idx,
-                "model": "pred_ensemble",
-                "fit_dates": len(fit_dates),
-                "test_dates": days_into_test,
-                "feature_subset": "broad_fixed_blend",
-                "retrain_reason": retrain_reason,
-                "trigger_avg_ev": trigger_avg_ev,
-                "trigger_win_rate": trigger_win_rate,
-            }
-        )
-        window_diagnostics.append(
-            {
-                "window_id": window_idx,
                 "model": "pred_specialist_ensemble",
-                "fit_dates": len(fit_dates),
+                "fit_dates": max_fit_days,
                 "test_dates": days_into_test,
                 "feature_subset": "rank_blend_" + "_".join(specialist_ensemble_models),
                 "retrain_reason": retrain_reason,

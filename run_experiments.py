@@ -14,6 +14,7 @@ from src.config import (
     HORIZON,
     HOLDOUT_DAYS,
     LIVE_MODEL,
+    MODEL_FIT_WINDOWS,
     MODEL_ROUTER_CANDIDATES,
     REBALANCE_DAYS,
     RETRAIN_DETERIORATION_LOOKBACK_DAYS,
@@ -51,7 +52,14 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         type=int,
         default=[FIT_DAYS],
-        help="One or more FIT_DAYS values.",
+        help="One or more primary FIT_DAYS values. The primary value keeps backward-compatible base prediction names.",
+    )
+    parser.add_argument(
+        "--model-fit-windows",
+        nargs="+",
+        type=int,
+        default=MODEL_FIT_WINDOWS,
+        help="Fit-window variants to train for every model family.",
     )
     parser.add_argument(
         "--step-days",
@@ -251,6 +259,7 @@ def main() -> None:
             stats_df, plot_path, _, _ = run_pipeline(
                 csv_path=str(csv_path),
                 fit_days=params["fit_days"],
+                model_fit_windows=args.model_fit_windows,
                 step_days=params["step_days"],
                 rebalance_days=params["rebalance_days"],
                 horizon=params["horizon"],

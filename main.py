@@ -7,6 +7,7 @@ from src.config import (
     HORIZON,
     HOLDOUT_DAYS,
     LIVE_MODEL,
+    MODEL_FIT_WINDOWS,
     MODEL_ROUTER_CANDIDATES,
     REBALANCE_DAYS,
     RETRAIN_DETERIORATION_LOOKBACK_DAYS,
@@ -31,6 +32,7 @@ def main() -> None:
     stats_df, _, _, diagnostics_summary = run_pipeline(
         csv_path=csv_path,
         fit_days=FIT_DAYS,
+        model_fit_windows=MODEL_FIT_WINDOWS,
         step_days=STEP_DAYS,
         rebalance_days=REBALANCE_DAYS,
         horizon=HORIZON,

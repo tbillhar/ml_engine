@@ -46,6 +46,7 @@ from src.config import (
     HORIZON,
     HOLDOUT_DAYS,
     LIVE_MODEL,
+    MODEL_FIT_WINDOWS,
     MODEL_ROUTER_CANDIDATES,
     REBALANCE_DAYS,
     RAW_DATA_SOURCE,
@@ -80,6 +81,7 @@ class PipelineWorker(QObject):
         self,
         csv_path: str,
         fit_days: int,
+        model_fit_windows: list[int],
         step_days: int,
         rebalance_days: int,
         horizon: int,
@@ -102,6 +104,7 @@ class PipelineWorker(QObject):
         super().__init__()
         self.csv_path = csv_path
         self.fit_days = fit_days
+        self.model_fit_windows = model_fit_windows
         self.step_days = step_days
         self.rebalance_days = rebalance_days
         self.horizon = horizon
@@ -126,6 +129,7 @@ class PipelineWorker(QObject):
             stats_df, plot_path, heatmap_path, diagnostics_summary = run_pipeline(
                 csv_path=self.csv_path,
                 fit_days=self.fit_days,
+                model_fit_windows=self.model_fit_windows,
                 step_days=self.step_days,
                 rebalance_days=self.rebalance_days,
                 horizon=self.horizon,
@@ -244,6 +248,7 @@ class FXPipelineWindow(QMainWindow):
         self.build_features_btn.clicked.connect(self.start_feature_build)
 
         self.fit_input = QLineEdit(str(FIT_DAYS))
+        self.model_fit_windows_input = QLineEdit(",".join(str(window) for window in MODEL_FIT_WINDOWS))
         self.step_input = QLineEdit(str(STEP_DAYS))
         self.rebalance_input = QLineEdit(str(REBALANCE_DAYS))
         self.horizon_input = QLineEdit(str(HORIZON))
@@ -330,6 +335,7 @@ class FXPipelineWindow(QMainWindow):
             diagnostics_guide_text(
                 SPECIALIST_ENSEMBLE_MEMBERS,
                 MODEL_ROUTER_CANDIDATES,
+                MODEL_FIT_WINDOWS,
                 SPECIALIST_WEIGHT_LOOKBACK_DAYS,
                 REBALANCE_DAYS,
                 SPECIALIST_WEIGHTING_MODE,
@@ -364,6 +370,7 @@ class FXPipelineWindow(QMainWindow):
 
         params_form = QFormLayout()
         params_form.addRow("FIT_DAYS", self.fit_input)
+        params_form.addRow("MODEL_FIT_WINDOWS", self.model_fit_windows_input)
         params_form.addRow("STEP_DAYS", self.step_input)
         params_form.addRow("REBALANCE_DAYS", self.rebalance_input)
         params_form.addRow("HORIZON", self.horizon_input)
@@ -569,6 +576,15 @@ class FXPipelineWindow(QMainWindow):
                 raise ValueError(f"CSV file does not exist: {csv_path}")
 
             fit_days = self._read_int(self.fit_input, "FIT_DAYS")
+            model_fit_windows = [
+                int(item.strip())
+                for item in self.model_fit_windows_input.text().split(",")
+                if item.strip()
+            ]
+            if not model_fit_windows:
+                raise ValueError("MODEL_FIT_WINDOWS must contain at least one fit window")
+            if any(window <= 0 for window in model_fit_windows):
+                raise ValueError("MODEL_FIT_WINDOWS must contain only positive integers")
             step_days = self._read_int(self.step_input, "STEP_DAYS")
             rebalance_days = self._read_int(self.rebalance_input, "REBALANCE_DAYS")
             horizon = self._read_int(self.horizon_input, "HORIZON")
@@ -633,6 +649,7 @@ class FXPipelineWindow(QMainWindow):
             diagnostics_guide_text(
                 specialist_ensemble_members,
                 model_router_candidates,
+                model_fit_windows,
                 specialist_weight_lookback_days,
                 rebalance_days,
                 specialist_weighting_mode,
@@ -650,6 +667,7 @@ class FXPipelineWindow(QMainWindow):
         self.pipeline_worker = PipelineWorker(
             csv_path=csv_path,
             fit_days=fit_days,
+            model_fit_windows=model_fit_windows,
             step_days=step_days,
             rebalance_days=rebalance_days,
             horizon=horizon,
@@ -732,6 +750,7 @@ class FXPipelineWindow(QMainWindow):
         self._set_busy(False)
 
     def populate_summary_table(self, stats_df: pd.DataFrame) -> None:
+        self.summary_table.setSortingEnabled(False)
         self.summary_table.setRowCount(len(stats_df))
         for i, row in stats_df.iterrows():
             display_name = row["display_name"] if "display_name" in stats_df.columns else row["model"]
@@ -740,6 +759,7 @@ class FXPipelineWindow(QMainWindow):
             self.summary_table.setItem(i, 2, QTableWidgetItem(f"{row['Annualized Vol'] * 100:.1f}%"))
             self.summary_table.setItem(i, 3, QTableWidgetItem(f"{row['Sharpe']:.6f}"))
             self.summary_table.setItem(i, 4, QTableWidgetItem(f"{row['Cumulative Return'] * 100:.1f}%"))
+        self.summary_table.setSortingEnabled(True)
         self.summary_table.sortItems(3, Qt.DescendingOrder)
 
     def load_plot(self, plot_path: str) -> None:
