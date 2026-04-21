@@ -240,7 +240,8 @@ def diagnostics_guide_text(
             "- model_prediction_correlation.csv: holdout prediction correlation matrix.",
             "- top1_pick_overlap.csv: fraction of holdout dates where each pair of models picked the same Top-1 pair.",
             "- model_switch_log.csv: daily active specialist model and switch/stay reason for the specialist router.",
-            "- model_opportunity_analysis.csv: rolling view of whether any model had positive recent edge and whether the router picked it.",
+            "- model_opportunity_analysis.csv: daily rolling view of whether any model had positive recent edge and whether the router picked it.",
+            "- model_opportunity_rebalance_analysis.csv: same opportunity view filtered to actionable rebalance dates.",
             "- ensemble_benefit.csv: Top-1 ensemble improvements versus the best single non-ensemble model.",
             "- diagnostics_summary.txt: concise holdout observations shown in the GUI.",
             "",
@@ -279,17 +280,25 @@ def selected_trade_rows(pred_df: pd.DataFrame, pred_col: str, rebalance_days: in
     return pd.concat(selected_rows, ignore_index=True) if selected_rows else pred_df.iloc[0:0].copy()
 
 
+def cash_gate_column_for_model(pred_df: pd.DataFrame, model_col: str) -> str | None:
+    """Return the cash-gate column used by routed specialist ensemble outputs."""
+    if model_col == "pred_specialist_ensemble" and "specialist_ensemble_cash_gate" in pred_df.columns:
+        return "specialist_ensemble_cash_gate"
+    return None
+
+
 def build_model_opportunity_analysis(
     pred_df: pd.DataFrame,
     model_cols: list[str],
     lookback_days: int,
+    rebalance_days: int | None = None,
 ) -> pd.DataFrame:
     """Measure whether any model had recent positive Top-1 opportunity and whether the router found it."""
     date_order = sorted(pred_df["Date"].unique())
     model_return_history: dict[str, list[float]] = {model_col: [] for model_col in model_cols}
     rows: list[dict[str, float | int | str | pd.Timestamp]] = []
 
-    for current_date in date_order:
+    for date_idx, current_date in enumerate(date_order):
         date_slice = pred_df[pred_df["Date"] == current_date]
         trailing_scores: dict[str, float] = {}
         trailing_win_rates: dict[str, float] = {}
@@ -329,30 +338,34 @@ def build_model_opportunity_analysis(
                 if np.isfinite(best_trailing_avg_ev) and np.isfinite(active_router_avg_ev):
                     router_regret_vs_best = best_trailing_avg_ev - active_router_avg_ev
 
-        rows.append(
-            {
-                "Date": current_date,
-                "best_trailing_model": best_trailing_model,
-                "best_trailing_avg_ev": best_trailing_avg_ev,
-                "best_trailing_win_rate": best_trailing_win_rate,
-                "active_router_model": active_router_model,
-                "active_router_avg_ev": active_router_avg_ev,
-                "active_router_win_rate": active_router_win_rate,
-                "router_regret_vs_best": router_regret_vs_best,
-                "positive_model_count": positive_model_count,
-                "all_models_negative": all_models_negative,
-                "models_evaluated": len(model_cols),
-            }
-        )
+        is_rebalance_date = rebalance_days is None or date_idx % rebalance_days == 0
+        if is_rebalance_date:
+            rows.append(
+                {
+                    "Date": current_date,
+                    "best_trailing_model": best_trailing_model,
+                    "best_trailing_avg_ev": best_trailing_avg_ev,
+                    "best_trailing_win_rate": best_trailing_win_rate,
+                    "active_router_model": active_router_model,
+                    "active_router_avg_ev": active_router_avg_ev,
+                    "active_router_win_rate": active_router_win_rate,
+                    "router_regret_vs_best": router_regret_vs_best,
+                    "positive_model_count": positive_model_count,
+                    "all_models_negative": all_models_negative,
+                    "models_evaluated": len(model_cols),
+                    "is_rebalance_date": int(rebalance_days is not None),
+                }
+            )
 
         for model_col in model_cols:
             chosen_row = date_slice.sort_values(model_col, ascending=False).iloc[0]
             model_return_history[model_col].append(float(chosen_row["ev_target"]))
 
     opportunity_df = pd.DataFrame(rows)
-    opportunity_df["best_model_changed"] = (
-        opportunity_df["best_trailing_model"].ne(opportunity_df["best_trailing_model"].shift()).astype(int)
-    )
+    if not opportunity_df.empty:
+        opportunity_df["best_model_changed"] = (
+            opportunity_df["best_trailing_model"].ne(opportunity_df["best_trailing_model"].shift()).astype(int)
+        )
     return opportunity_df
 
 
@@ -369,12 +382,14 @@ def build_model_top1_curves(
     eq_df = compute_equal_weight_pnl(pred_df, transaction_loss_pct=transaction_loss_pct)
     eq_stats = perf_stats(eq_df, trading_days_per_year=trading_days_per_year)
     for model_col in model_cols:
+        cash_gate_col = cash_gate_column_for_model(pred_df, model_col)
         pnl_df = compute_top_k_pnl(
             pred_df,
             pred_col=model_col,
             transaction_loss_pct=transaction_loss_pct,
             k=1,
             rebalance_days=rebalance_days,
+            cash_gate_col=cash_gate_col,
         )
         stats = perf_stats(pnl_df, trading_days_per_year=trading_days_per_year)
         excess_df = compute_top_k_excess_vs_equal_weight_pnl(
@@ -383,6 +398,7 @@ def build_model_top1_curves(
             transaction_loss_pct=transaction_loss_pct,
             k=1,
             rebalance_days=rebalance_days,
+            cash_gate_col=cash_gate_col,
         )
         excess_stats = perf_stats(excess_df, trading_days_per_year=trading_days_per_year)
         spread_df = compute_top_bottom_spread_pnl(
@@ -391,6 +407,7 @@ def build_model_top1_curves(
             transaction_loss_pct=transaction_loss_pct,
             k=1,
             rebalance_days=rebalance_days,
+            cash_gate_col=cash_gate_col,
         )
         spread_stats = perf_stats(spread_df, trading_days_per_year=trading_days_per_year)
         rows.append(
@@ -415,6 +432,7 @@ def build_model_top1_curves(
             transaction_loss_pct=transaction_loss_pct,
             k=1,
             rebalance_days=rebalance_days,
+            cash_gate_col=cash_gate_col,
         )
         bottom_stats = perf_stats(bottom_df, trading_days_per_year=trading_days_per_year)
         bottom_excess_df = compute_bottom_k_excess_vs_equal_weight_pnl(
@@ -423,6 +441,7 @@ def build_model_top1_curves(
             transaction_loss_pct=transaction_loss_pct,
             k=1,
             rebalance_days=rebalance_days,
+            cash_gate_col=cash_gate_col,
         )
         bottom_excess_stats = perf_stats(bottom_excess_df, trading_days_per_year=trading_days_per_year)
         bottom_top_df = compute_bottom_top_spread_pnl(
@@ -431,6 +450,7 @@ def build_model_top1_curves(
             transaction_loss_pct=transaction_loss_pct,
             k=1,
             rebalance_days=rebalance_days,
+            cash_gate_col=cash_gate_col,
         )
         bottom_top_stats = perf_stats(bottom_top_df, trading_days_per_year=trading_days_per_year)
         rows.append(
@@ -481,12 +501,14 @@ def build_top_selection_diagnostics(
     """Compare models as Top-1/Bottom-1 selectors on the evaluation slice."""
     rows: list[dict[str, float | str]] = []
     for model_col in model_cols:
+        cash_gate_col = cash_gate_column_for_model(pred_df, model_col)
         pnl_df = compute_top_k_pnl(
             pred_df,
             pred_col=model_col,
             transaction_loss_pct=transaction_loss_pct,
             k=1,
             rebalance_days=rebalance_days,
+            cash_gate_col=cash_gate_col,
         )
         stats = perf_stats(pnl_df, trading_days_per_year=trading_days_per_year)
         excess_df = compute_top_k_excess_vs_equal_weight_pnl(
@@ -495,6 +517,7 @@ def build_top_selection_diagnostics(
             transaction_loss_pct=transaction_loss_pct,
             k=1,
             rebalance_days=rebalance_days,
+            cash_gate_col=cash_gate_col,
         )
         excess_stats = perf_stats(excess_df, trading_days_per_year=trading_days_per_year)
         spread_df = compute_top_bottom_spread_pnl(
@@ -503,6 +526,7 @@ def build_top_selection_diagnostics(
             transaction_loss_pct=transaction_loss_pct,
             k=1,
             rebalance_days=rebalance_days,
+            cash_gate_col=cash_gate_col,
         )
         spread_stats = perf_stats(spread_df, trading_days_per_year=trading_days_per_year)
         selected_df = selected_trade_rows(pred_df, pred_col=model_col, rebalance_days=rebalance_days)
@@ -531,6 +555,7 @@ def build_top_selection_diagnostics(
             transaction_loss_pct=transaction_loss_pct,
             k=1,
             rebalance_days=rebalance_days,
+            cash_gate_col=cash_gate_col,
         )
         bottom_stats = perf_stats(bottom_df, trading_days_per_year=trading_days_per_year)
         bottom_selected_df = (
@@ -544,6 +569,7 @@ def build_top_selection_diagnostics(
             transaction_loss_pct=transaction_loss_pct,
             k=1,
             rebalance_days=rebalance_days,
+            cash_gate_col=cash_gate_col,
         )
         bottom_excess_stats = perf_stats(bottom_excess_df, trading_days_per_year=trading_days_per_year)
         bottom_top_df = compute_bottom_top_spread_pnl(
@@ -552,6 +578,7 @@ def build_top_selection_diagnostics(
             transaction_loss_pct=transaction_loss_pct,
             k=1,
             rebalance_days=rebalance_days,
+            cash_gate_col=cash_gate_col,
         )
         bottom_top_stats = perf_stats(bottom_top_df, trading_days_per_year=trading_days_per_year)
         rows.append(
@@ -656,6 +683,7 @@ def strategy_frame(
     rebalance_days: int,
 ) -> tuple[list[tuple[str, pd.DataFrame]], pd.DataFrame]:
     """Build Top-1 strategy and benchmark PnL frames for a chosen live prediction column."""
+    cash_gate_col = cash_gate_column_for_model(pred_df, pred_col)
     strategy_series = [
         (
             f"{live_model_label} Top-1",
@@ -665,6 +693,7 @@ def strategy_frame(
                 transaction_loss_pct=transaction_loss_pct,
                 k=1,
                 rebalance_days=rebalance_days,
+                cash_gate_col=cash_gate_col,
             ),
         ),
         (
@@ -875,6 +904,12 @@ def run_pipeline(
         model_cols=[col for col in model_cols if col != "pred_specialist_ensemble"],
         lookback_days=specialist_weight_lookback_days,
     )
+    model_opportunity_rebalance_df = build_model_opportunity_analysis(
+        eval_pred_df,
+        model_cols=[col for col in model_cols if col != "pred_specialist_ensemble"],
+        lookback_days=specialist_weight_lookback_days,
+        rebalance_days=rebalance_days,
+    )
     leaderboard_df, holdout_curves = build_model_top1_curves(
         eval_pred_df,
         model_cols=model_cols,
@@ -958,6 +993,7 @@ def run_pipeline(
                 "Date",
                 "specialist_ensemble_active_model",
                 "specialist_ensemble_switch_reason",
+                "specialist_ensemble_cash_gate",
                 "specialist_ensemble_weight_info",
             ]
         ]
@@ -966,6 +1002,7 @@ def run_pipeline(
             columns={
                 "specialist_ensemble_active_model": "active_model",
                 "specialist_ensemble_switch_reason": "switch_reason",
+                "specialist_ensemble_cash_gate": "cash_gate",
                 "specialist_ensemble_weight_info": "weight_info",
             }
         )
@@ -976,6 +1013,7 @@ def run_pipeline(
     top1_overlap_df.to_csv(output_dir / "top1_pick_overlap.csv")
     model_switch_log_df.to_csv(output_dir / "model_switch_log.csv", index=False)
     model_opportunity_df.to_csv(output_dir / "model_opportunity_analysis.csv", index=False)
+    model_opportunity_rebalance_df.to_csv(output_dir / "model_opportunity_rebalance_analysis.csv", index=False)
     model_diagnostics_df.to_csv(output_dir / "model_diagnostics.csv", index=False)
     ensemble_benefit_df.to_csv(output_dir / "ensemble_benefit.csv", index=False)
     formatted_performance_summary_csv(leaderboard_df).to_csv(output_dir / "performance_summary.csv", index=False)
@@ -1000,7 +1038,7 @@ def run_pipeline(
         leaderboard_df=leaderboard_df,
         top_selection_df=top_selection_df,
         model_diagnostics_df=model_diagnostics_df,
-        model_opportunity_df=model_opportunity_df,
+        model_opportunity_df=model_opportunity_rebalance_df,
         correlation_df=correlation_df,
         live_pred_col=live_pred_col,
     )

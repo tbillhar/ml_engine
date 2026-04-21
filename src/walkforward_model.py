@@ -365,11 +365,11 @@ def sticky_specialist_router_step(
     specialist_min_model_hold_days: int,
     specialist_switch_margin_min_avg_ev: float,
     specialist_switch_require_positive_ev: bool,
-) -> tuple[np.ndarray, int | None, int, str]:
+) -> tuple[np.ndarray, int | None, int, str, bool]:
     """Route to one active specialist with persistence and switching guards."""
     equal_weight = 1.0 / len(ensemble_models)
     if np.all(np.isnan(raw_scores)):
-        return np.full(len(ensemble_models), equal_weight), previous_active_idx, previous_hold_days, "no_history_equal"
+        return np.full(len(ensemble_models), equal_weight), previous_active_idx, previous_hold_days, "no_history_equal", False
 
     filled = np.nan_to_num(raw_scores, nan=-np.inf)
     leader_idx = int(np.argmax(filled))
@@ -377,40 +377,42 @@ def sticky_specialist_router_step(
 
     if previous_active_idx is None or previous_active_idx >= len(ensemble_models):
         if specialist_switch_require_positive_ev and leader_score <= 0:
-            return np.full(len(ensemble_models), equal_weight), None, 0, "no_positive_leader_equal"
+            return np.zeros(len(ensemble_models), dtype=float), None, 0, "cash_no_positive_model", True
         weights = np.zeros(len(ensemble_models), dtype=float)
         weights[leader_idx] = 1.0
-        return weights, leader_idx, 1, "init_leader"
+        return weights, leader_idx, 1, "init_leader", False
 
     current_idx = previous_active_idx
     current_score = filled[current_idx]
     new_hold_days = previous_hold_days + 1
 
     if leader_idx == current_idx:
+        if specialist_switch_require_positive_ev and leader_score <= 0:
+            return np.zeros(len(ensemble_models), dtype=float), None, 0, "cash_no_positive_model", True
         weights = np.zeros(len(ensemble_models), dtype=float)
         weights[current_idx] = 1.0
-        return weights, current_idx, new_hold_days, "stay_current_best"
+        return weights, current_idx, new_hold_days, "stay_current_best", False
 
     if previous_hold_days < specialist_min_model_hold_days:
+        if specialist_switch_require_positive_ev and np.nanmax(filled) <= 0:
+            return np.zeros(len(ensemble_models), dtype=float), None, 0, "cash_no_positive_model", True
         weights = np.zeros(len(ensemble_models), dtype=float)
         weights[current_idx] = 1.0
-        return weights, current_idx, new_hold_days, "hold_lock"
+        return weights, current_idx, new_hold_days, "hold_lock", False
 
     if specialist_switch_require_positive_ev and leader_score <= 0:
-        weights = np.zeros(len(ensemble_models), dtype=float)
-        weights[current_idx] = 1.0
-        return weights, current_idx, new_hold_days, "no_positive_challenger"
+        return np.zeros(len(ensemble_models), dtype=float), None, 0, "cash_no_positive_model", True
 
     if not np.isfinite(current_score):
         current_score = -np.inf
     if leader_score <= current_score + specialist_switch_margin_min_avg_ev:
         weights = np.zeros(len(ensemble_models), dtype=float)
         weights[current_idx] = 1.0
-        return weights, current_idx, new_hold_days, "margin_not_met"
+        return weights, current_idx, new_hold_days, "margin_not_met", False
 
     weights = np.zeros(len(ensemble_models), dtype=float)
     weights[leader_idx] = 1.0
-    return weights, leader_idx, 1, "switch_margin"
+    return weights, leader_idx, 1, "switch_margin", False
 
 
 def add_specialist_ensemble_scores(
@@ -449,6 +451,7 @@ def add_specialist_ensemble_scores(
     test_sub["specialist_ensemble_active_model"] = ""
     test_sub["specialist_ensemble_switch_reason"] = ""
     test_sub["specialist_ensemble_weight_info"] = ""
+    test_sub["specialist_ensemble_cash_gate"] = 0
 
     for current_idx, current_date in enumerate(date_order):
         normalized_weights, raw_scores = specialist_weights_from_history(
@@ -458,12 +461,14 @@ def add_specialist_ensemble_scores(
             specialist_weighting_mode=specialist_weighting_mode,
         )
         switch_reason = "stateless_mode"
+        cash_gate = False
         if specialist_weighting_mode == "sticky_winner":
             (
                 normalized_weights,
                 router_active_idx,
                 router_hold_days,
                 switch_reason,
+                cash_gate,
             ) = sticky_specialist_router_step(
                 raw_scores=raw_scores,
                 ensemble_models=router_models,
@@ -488,6 +493,7 @@ def add_specialist_ensemble_scores(
         active_model = router_models[router_active_idx] if router_active_idx is not None else ""
         test_sub.loc[date_mask, "specialist_ensemble_active_model"] = active_model
         test_sub.loc[date_mask, "specialist_ensemble_switch_reason"] = switch_reason
+        test_sub.loc[date_mask, "specialist_ensemble_cash_gate"] = int(cash_gate)
         weight_parts = []
         for idx, model_col in enumerate(weighted_models):
             weight_parts.append(f"{model_col}={normalized_weights[idx]:.3f}")
@@ -589,12 +595,14 @@ def run_walkforward_model(
                 specialist_weighting_mode=specialist_weighting_mode,
             )
             switch_reason = "stateless_mode"
+            cash_gate = False
             if specialist_weighting_mode == "sticky_winner":
                 (
                     specialist_weights,
                     router_active_idx,
                     router_hold_days,
                     switch_reason,
+                    cash_gate,
                 ) = sticky_specialist_router_step(
                     raw_scores=raw_scores,
                     ensemble_models=router_prediction_cols,
@@ -614,6 +622,7 @@ def run_walkforward_model(
                 router_prediction_cols[router_active_idx] if router_active_idx is not None else ""
             )
             day_sub["specialist_ensemble_switch_reason"] = switch_reason
+            day_sub["specialist_ensemble_cash_gate"] = int(cash_gate)
             day_sub["specialist_ensemble_weight_info"] = "|".join(
                 f"{model_col}={specialist_weights[idx]:.3f}" for idx, model_col in enumerate(weighted_models)
             )
@@ -626,6 +635,7 @@ def run_walkforward_model(
                         *prediction_cols,
                         "specialist_ensemble_active_model",
                         "specialist_ensemble_switch_reason",
+                        "specialist_ensemble_cash_gate",
                         "specialist_ensemble_weight_info",
                     ]
                 ]

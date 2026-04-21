@@ -68,6 +68,7 @@ def compute_top_k_pnl(
     k: int = 1,
     rebalance_days: int = 1,
     ascending: bool = False,
+    cash_gate_col: str | None = None,
 ) -> pd.DataFrame:
     """Daily PnL from selecting the top/bottom-k predictions on a rebalance schedule."""
     rows = []
@@ -76,14 +77,26 @@ def compute_top_k_pnl(
     current_weights: dict[str, float] = {}
     held_pairs: list[str] = []
     held_avg_score = np.nan
+    has_position_state = False
     for idx, (d, grp) in enumerate(df.groupby("Date", sort=True)):
-        should_rebalance = (idx % rebalance_days == 0) or not current_weights
+        should_rebalance = (idx % rebalance_days == 0) or not has_position_state
         if should_rebalance:
-            chosen = grp.sort_values(pred_col, ascending=ascending).head(k)
-            weight = 1.0 / len(chosen)
-            current_weights = {pair: weight for pair in chosen["pair"]}
-            held_pairs = list(chosen["pair"])
-            held_avg_score = float(chosen[pred_col].mean())
+            cash_gate_active = (
+                bool(grp[cash_gate_col].iloc[0])
+                if cash_gate_col is not None and cash_gate_col in grp.columns
+                else False
+            )
+            if cash_gate_active:
+                current_weights = {}
+                held_pairs = []
+                held_avg_score = np.nan
+            else:
+                chosen = grp.sort_values(pred_col, ascending=ascending).head(k)
+                weight = 1.0 / len(chosen)
+                current_weights = {pair: weight for pair in chosen["pair"]}
+                held_pairs = list(chosen["pair"])
+                held_avg_score = float(chosen[pred_col].mean())
+            has_position_state = True
         held_rows = grp.set_index("pair").reindex(held_pairs).dropna(subset=["next_ret"]).reset_index()
         gross_return = float(
             sum(current_weights.get(pair, 0.0) * next_ret for pair, next_ret in zip(held_rows["pair"], held_rows["next_ret"]))
@@ -111,6 +124,7 @@ def compute_bottom_k_pnl(
     transaction_loss_pct: float = 0.0,
     k: int = 1,
     rebalance_days: int = 1,
+    cash_gate_col: str | None = None,
 ) -> pd.DataFrame:
     """Daily PnL from selecting the bottom-k predictions on a rebalance schedule."""
     return compute_top_k_pnl(
@@ -120,6 +134,7 @@ def compute_bottom_k_pnl(
         k=k,
         rebalance_days=rebalance_days,
         ascending=True,
+        cash_gate_col=cash_gate_col,
     )
 
 
@@ -190,6 +205,7 @@ def compute_top_k_excess_vs_equal_weight_pnl(
     transaction_loss_pct: float = 0.0,
     k: int = 1,
     rebalance_days: int = 1,
+    cash_gate_col: str | None = None,
 ) -> pd.DataFrame:
     """Daily excess PnL of Top-k versus equal-weight benchmark."""
     top_df = compute_top_k_pnl(
@@ -198,6 +214,7 @@ def compute_top_k_excess_vs_equal_weight_pnl(
         transaction_loss_pct=transaction_loss_pct,
         k=k,
         rebalance_days=rebalance_days,
+        cash_gate_col=cash_gate_col,
     )
     eq_df = compute_equal_weight_pnl(df, transaction_loss_pct=transaction_loss_pct)
     merged = top_df.merge(
@@ -216,6 +233,7 @@ def compute_bottom_k_excess_vs_equal_weight_pnl(
     transaction_loss_pct: float = 0.0,
     k: int = 1,
     rebalance_days: int = 1,
+    cash_gate_col: str | None = None,
 ) -> pd.DataFrame:
     """Daily excess PnL of Bottom-k versus equal-weight benchmark."""
     bottom_df = compute_bottom_k_pnl(
@@ -224,6 +242,7 @@ def compute_bottom_k_excess_vs_equal_weight_pnl(
         transaction_loss_pct=transaction_loss_pct,
         k=k,
         rebalance_days=rebalance_days,
+        cash_gate_col=cash_gate_col,
     )
     eq_df = compute_equal_weight_pnl(df, transaction_loss_pct=transaction_loss_pct)
     merged = bottom_df.merge(
@@ -242,6 +261,7 @@ def compute_top_bottom_spread_pnl(
     transaction_loss_pct: float = 0.0,
     k: int = 1,
     rebalance_days: int = 1,
+    cash_gate_col: str | None = None,
 ) -> pd.DataFrame:
     """Daily long-top-k minus short-bottom-k PnL."""
     rows = []
@@ -251,20 +271,33 @@ def compute_top_bottom_spread_pnl(
     held_long_pairs: list[str] = []
     held_short_pairs: list[str] = []
     held_avg_score = np.nan
+    has_position_state = False
 
     for idx, (d, grp) in enumerate(df.groupby("Date", sort=True)):
-        should_rebalance = (idx % rebalance_days == 0) or not current_weights
+        should_rebalance = (idx % rebalance_days == 0) or not has_position_state
         if should_rebalance:
-            ranked = grp.sort_values(pred_col, ascending=False)
-            long_side = ranked.head(k)
-            short_side = ranked.tail(k)
-            long_weight = 1.0 / len(long_side)
-            short_weight = -1.0 / len(short_side)
-            current_weights = {pair: long_weight for pair in long_side["pair"]}
-            current_weights.update({pair: short_weight for pair in short_side["pair"]})
-            held_long_pairs = list(long_side["pair"])
-            held_short_pairs = list(short_side["pair"])
-            held_avg_score = float(long_side[pred_col].mean() - short_side[pred_col].mean())
+            cash_gate_active = (
+                bool(grp[cash_gate_col].iloc[0])
+                if cash_gate_col is not None and cash_gate_col in grp.columns
+                else False
+            )
+            if cash_gate_active:
+                current_weights = {}
+                held_long_pairs = []
+                held_short_pairs = []
+                held_avg_score = np.nan
+            else:
+                ranked = grp.sort_values(pred_col, ascending=False)
+                long_side = ranked.head(k)
+                short_side = ranked.tail(k)
+                long_weight = 1.0 / len(long_side)
+                short_weight = -1.0 / len(short_side)
+                current_weights = {pair: long_weight for pair in long_side["pair"]}
+                current_weights.update({pair: short_weight for pair in short_side["pair"]})
+                held_long_pairs = list(long_side["pair"])
+                held_short_pairs = list(short_side["pair"])
+                held_avg_score = float(long_side[pred_col].mean() - short_side[pred_col].mean())
+            has_position_state = True
 
         grp_indexed = grp.set_index("pair")
         long_rows = grp_indexed.reindex(held_long_pairs).dropna(subset=["next_ret"]).reset_index()
@@ -296,6 +329,7 @@ def compute_bottom_top_spread_pnl(
     transaction_loss_pct: float = 0.0,
     k: int = 1,
     rebalance_days: int = 1,
+    cash_gate_col: str | None = None,
 ) -> pd.DataFrame:
     """Daily long-bottom-k minus short-top-k PnL."""
     spread_df = compute_top_bottom_spread_pnl(
@@ -304,6 +338,7 @@ def compute_bottom_top_spread_pnl(
         transaction_loss_pct=transaction_loss_pct,
         k=k,
         rebalance_days=rebalance_days,
+        cash_gate_col=cash_gate_col,
     ).copy()
     spread_df["pnl"] = -spread_df["pnl"]
     spread_df["gross_return"] = -spread_df["gross_return"]
