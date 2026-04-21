@@ -240,6 +240,7 @@ def diagnostics_guide_text(
             "- model_prediction_correlation.csv: holdout prediction correlation matrix.",
             "- top1_pick_overlap.csv: fraction of holdout dates where each pair of models picked the same Top-1 pair.",
             "- model_switch_log.csv: daily active specialist model and switch/stay reason for the specialist router.",
+            "- model_opportunity_analysis.csv: rolling view of whether any model had positive recent edge and whether the router picked it.",
             "- ensemble_benefit.csv: Top-1 ensemble improvements versus the best single non-ensemble model.",
             "- diagnostics_summary.txt: concise holdout observations shown in the GUI.",
             "",
@@ -276,6 +277,83 @@ def selected_trade_rows(pred_df: pd.DataFrame, pred_col: str, rebalance_days: in
             continue
         selected_rows.append(grp.sort_values(pred_col, ascending=False).head(1))
     return pd.concat(selected_rows, ignore_index=True) if selected_rows else pred_df.iloc[0:0].copy()
+
+
+def build_model_opportunity_analysis(
+    pred_df: pd.DataFrame,
+    model_cols: list[str],
+    lookback_days: int,
+) -> pd.DataFrame:
+    """Measure whether any model had recent positive Top-1 opportunity and whether the router found it."""
+    date_order = sorted(pred_df["Date"].unique())
+    model_return_history: dict[str, list[float]] = {model_col: [] for model_col in model_cols}
+    rows: list[dict[str, float | int | str | pd.Timestamp]] = []
+
+    for current_date in date_order:
+        date_slice = pred_df[pred_df["Date"] == current_date]
+        trailing_scores: dict[str, float] = {}
+        trailing_win_rates: dict[str, float] = {}
+        for model_col in model_cols:
+            history_slice = model_return_history[model_col][-lookback_days:]
+            if history_slice:
+                trailing = np.array(history_slice, dtype=float)
+                trailing_scores[model_col] = float(np.mean(trailing))
+                trailing_win_rates[model_col] = float(np.mean(trailing > 0))
+            else:
+                trailing_scores[model_col] = np.nan
+                trailing_win_rates[model_col] = np.nan
+
+        finite_scores = {model: score for model, score in trailing_scores.items() if np.isfinite(score)}
+        if finite_scores:
+            best_trailing_model = max(finite_scores, key=finite_scores.get)
+            best_trailing_avg_ev = finite_scores[best_trailing_model]
+            best_trailing_win_rate = trailing_win_rates[best_trailing_model]
+            positive_model_count = int(sum(score > 0 for score in finite_scores.values()))
+            all_models_negative = int(all(score <= 0 for score in finite_scores.values()))
+        else:
+            best_trailing_model = ""
+            best_trailing_avg_ev = np.nan
+            best_trailing_win_rate = np.nan
+            positive_model_count = 0
+            all_models_negative = 0
+
+        active_router_model = ""
+        active_router_avg_ev = np.nan
+        active_router_win_rate = np.nan
+        router_regret_vs_best = np.nan
+        if "specialist_ensemble_active_model" in date_slice.columns:
+            active_router_model = str(date_slice["specialist_ensemble_active_model"].iloc[0] or "")
+            if active_router_model in trailing_scores:
+                active_router_avg_ev = trailing_scores[active_router_model]
+                active_router_win_rate = trailing_win_rates[active_router_model]
+                if np.isfinite(best_trailing_avg_ev) and np.isfinite(active_router_avg_ev):
+                    router_regret_vs_best = best_trailing_avg_ev - active_router_avg_ev
+
+        rows.append(
+            {
+                "Date": current_date,
+                "best_trailing_model": best_trailing_model,
+                "best_trailing_avg_ev": best_trailing_avg_ev,
+                "best_trailing_win_rate": best_trailing_win_rate,
+                "active_router_model": active_router_model,
+                "active_router_avg_ev": active_router_avg_ev,
+                "active_router_win_rate": active_router_win_rate,
+                "router_regret_vs_best": router_regret_vs_best,
+                "positive_model_count": positive_model_count,
+                "all_models_negative": all_models_negative,
+                "models_evaluated": len(model_cols),
+            }
+        )
+
+        for model_col in model_cols:
+            chosen_row = date_slice.sort_values(model_col, ascending=False).iloc[0]
+            model_return_history[model_col].append(float(chosen_row["ev_target"]))
+
+    opportunity_df = pd.DataFrame(rows)
+    opportunity_df["best_model_changed"] = (
+        opportunity_df["best_trailing_model"].ne(opportunity_df["best_trailing_model"].shift()).astype(int)
+    )
+    return opportunity_df
 
 
 def build_model_top1_curves(
@@ -613,6 +691,7 @@ def build_diagnostics_summary(
     leaderboard_df: pd.DataFrame,
     top_selection_df: pd.DataFrame,
     model_diagnostics_df: pd.DataFrame,
+    model_opportunity_df: pd.DataFrame,
     correlation_df: pd.DataFrame,
     live_pred_col: str,
 ) -> str:
@@ -633,6 +712,18 @@ def build_diagnostics_summary(
         ["Sharpe", "Annualized Return"],
         ascending=[False, False],
     ).iloc[0]
+    opportunity_rows = model_opportunity_df[model_opportunity_df["best_trailing_model"] != ""]
+    positive_opportunity_rate = (
+        float((opportunity_rows["positive_model_count"] > 0).mean()) if not opportunity_rows.empty else np.nan
+    )
+    all_models_negative_rate = (
+        float(opportunity_rows["all_models_negative"].mean()) if not opportunity_rows.empty else np.nan
+    )
+    avg_router_regret = (
+        float(opportunity_rows["router_regret_vs_best"].dropna().mean())
+        if not opportunity_rows["router_regret_vs_best"].dropna().empty
+        else np.nan
+    )
     avg_corr = correlation_df.where(~np.eye(len(correlation_df), dtype=bool)).stack().mean()
     return "\n".join(
         [
@@ -656,6 +747,11 @@ def build_diagnostics_summary(
                 f"Best holdout Bottom-1 selector: {best_bottom1['model']} | "
                 f"AnnRet {best_bottom1['Annualized Return'] * 100:.1f}% | "
                 f"Sharpe {best_bottom1['Sharpe']:.2f}"
+            ),
+            (
+                f"Rolling model opportunity: positive model available {positive_opportunity_rate * 100:.1f}% "
+                f"of days | all models negative {all_models_negative_rate * 100:.1f}% | "
+                f"avg router regret {avg_router_regret:.6f}"
             ),
             f"Average pairwise prediction correlation: {avg_corr:.3f}",
         ]
@@ -774,6 +870,11 @@ def run_pipeline(
     correlation_df = eval_pred_df[model_cols].corr()
     spearman_correlation_df = eval_pred_df[model_cols].corr(method="spearman")
     top1_overlap_df = build_top1_pick_overlap(eval_pred_df, model_cols=model_cols)
+    model_opportunity_df = build_model_opportunity_analysis(
+        eval_pred_df,
+        model_cols=[col for col in model_cols if col != "pred_specialist_ensemble"],
+        lookback_days=specialist_weight_lookback_days,
+    )
     leaderboard_df, holdout_curves = build_model_top1_curves(
         eval_pred_df,
         model_cols=model_cols,
@@ -874,6 +975,7 @@ def run_pipeline(
     spearman_correlation_df.to_csv(output_dir / "model_prediction_rank_correlation.csv")
     top1_overlap_df.to_csv(output_dir / "top1_pick_overlap.csv")
     model_switch_log_df.to_csv(output_dir / "model_switch_log.csv", index=False)
+    model_opportunity_df.to_csv(output_dir / "model_opportunity_analysis.csv", index=False)
     model_diagnostics_df.to_csv(output_dir / "model_diagnostics.csv", index=False)
     ensemble_benefit_df.to_csv(output_dir / "ensemble_benefit.csv", index=False)
     formatted_performance_summary_csv(leaderboard_df).to_csv(output_dir / "performance_summary.csv", index=False)
@@ -898,6 +1000,7 @@ def run_pipeline(
         leaderboard_df=leaderboard_df,
         top_selection_df=top_selection_df,
         model_diagnostics_df=model_diagnostics_df,
+        model_opportunity_df=model_opportunity_df,
         correlation_df=correlation_df,
         live_pred_col=live_pred_col,
     )
