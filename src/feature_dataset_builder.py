@@ -93,6 +93,95 @@ def _pairwise_transform(
     return pd.DataFrame(data, index=left.index)
 
 
+def _safe_divide(numerator: pd.DataFrame, denominator: pd.DataFrame) -> pd.DataFrame:
+    return numerator / denominator.replace(0.0, np.nan)
+
+
+def _rename_ret_columns(frame: pd.DataFrame, prefix: str) -> pd.DataFrame:
+    return frame.rename(columns=lambda c: c.replace("ret_", prefix, 1))
+
+
+def _build_multi_window_return_features(
+    wide_ret: pd.DataFrame,
+    windows: tuple[int, ...],
+) -> tuple[pd.DataFrame, list[pd.DataFrame], list[pd.DataFrame]]:
+    momentum_frames = []
+    rank_frames = []
+    relative_strength_frames = []
+    for window in windows:
+        rolling_ret = wide_ret.rolling(window, min_periods=window).sum()
+        momentum_frames.append(_rename_ret_columns(rolling_ret, f"ret{window}_"))
+        rank_frames.append(
+            _rename_ret_columns(
+                rolling_ret.rank(axis=1, pct=True),
+                f"rank_ret{window}_",
+            )
+        )
+        relative_strength_frames.append(
+            _rename_ret_columns(
+                rolling_ret.sub(rolling_ret.mean(axis=1), axis=0),
+                f"rs{window}_",
+            )
+        )
+    return pd.concat(momentum_frames, axis=1), rank_frames, relative_strength_frames
+
+
+def _build_reversal_features(
+    wide_close: pd.DataFrame,
+    windows: tuple[int, ...],
+) -> list[pd.DataFrame]:
+    frames = []
+    for window in windows:
+        rolling_high = wide_close.rolling(window, min_periods=window).max()
+        rolling_low = wide_close.rolling(window, min_periods=window).min()
+        rolling_range = (rolling_high - rolling_low).replace(0.0, np.nan)
+        pair_columns = {col: col for col in wide_close.columns}
+        frames.append(
+            ((wide_close / rolling_high) - 1.0).rename(
+                columns={col: f"dist_high{window}_{pair}" for col, pair in pair_columns.items()}
+            )
+        )
+        frames.append(
+            ((wide_close / rolling_low) - 1.0).rename(
+                columns={col: f"dist_low{window}_{pair}" for col, pair in pair_columns.items()}
+            )
+        )
+        frames.append(
+            ((wide_close - rolling_low) / rolling_range).rename(
+                columns={col: f"range_pos{window}_{pair}" for col, pair in pair_columns.items()}
+            )
+        )
+    return frames
+
+
+def _build_usd_factor_features(wide_ret: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    usd_aligned = pd.DataFrame(index=wide_ret.index)
+    for ret_col in wide_ret.columns:
+        pair = ret_col.replace("ret_", "", 1).replace("=X", "")
+        if pair.endswith("USD"):
+            usd_aligned[ret_col] = wide_ret[ret_col]
+        elif pair.startswith("USD"):
+            usd_aligned[ret_col] = -wide_ret[ret_col]
+    usd_factor = usd_aligned.mean(axis=1).rename("usd_factor_ret")
+    usd_regime_df = pd.DataFrame(
+        {
+            "usd_factor_ret": usd_factor,
+            "usd_factor_mom5": usd_factor.rolling(5, min_periods=5).sum(),
+            "usd_factor_mom20": usd_factor.rolling(20, min_periods=20).sum(),
+            "usd_factor_vol20": usd_factor.rolling(20, min_periods=20).std(),
+            "usd_factor_z20": (
+                (usd_factor - usd_factor.rolling(20, min_periods=20).mean())
+                / usd_factor.rolling(20, min_periods=20).std()
+            ),
+        },
+        index=wide_ret.index,
+    )
+    residual_df = wide_ret.sub(usd_factor, axis=0).rename(
+        columns=lambda c: c.replace("ret_", "usd_resid_", 1)
+    )
+    return usd_regime_df, residual_df
+
+
 def build_feature_dataset(
     raw_csv_path: str | Path,
     output_csv_path: str | Path,
@@ -135,12 +224,24 @@ def build_feature_dataset(
     )
 
     wide_ret = df.pivot(index="Date", columns="pair", values="ret1").add_prefix("ret_")
+    wide_close = df.pivot(index="Date", columns="pair", values="Close")
     wide_vol30 = df.pivot(index="Date", columns="pair", values="vol30").add_prefix("vol30_")
     wide_mom5 = df.pivot(index="Date", columns="pair", values="mom5").add_prefix("mom5_")
     wide_mom10 = df.pivot(index="Date", columns="pair", values="mom10").add_prefix("mom10_")
 
     wide = pd.concat([wide_ret, wide_vol30, wide_mom5, wide_mom10], axis=1)
     wide = wide.sort_index()
+
+    log("Adding expanded multi-window return, rank, and relative-strength features")
+    multi_ret_df, multi_rank_frames, multi_rs_frames = _build_multi_window_return_features(
+        wide_ret,
+        windows=(3, 5, 7, 10, 15, 20),
+    )
+    multi_rs_frames = [
+        frame
+        for frame in multi_rs_frames
+        if not any(col.startswith(("rs5_", "rs10_", "rs20_")) for col in frame.columns)
+    ]
 
     log("Adding multi-horizon rolling correlation features")
     corr_frames = [_rolling_avg_corr(wide_ret, window) for window in (20, 40, 60, 120)]
@@ -161,6 +262,7 @@ def build_feature_dataset(
         wide_mom5.rank(axis=1, pct=True).rename(columns=lambda c: c.replace("mom5_", "rank_mom5_")),
         wide_mom10.rank(axis=1, pct=True).rename(columns=lambda c: c.replace("mom10_", "rank_mom10_")),
         wide_vol30.rank(axis=1, pct=True).rename(columns=lambda c: c.replace("vol30_", "rank_vol30_")),
+        *multi_rank_frames,
     ]
 
     log("Adding regime, calendar, and latent state features")
@@ -219,6 +321,30 @@ def build_feature_dataset(
         lambda a, b: a / b,
         "norm_mom10_",
     )
+    matching_vol20 = wide_ret.rolling(20, min_periods=20).std()
+    matching_vol60 = wide_ret.rolling(60, min_periods=60).std()
+    norm_ret_frames = []
+    for window in (3, 5, 7, 10, 15, 20):
+        ret_frame = wide_ret.rolling(window, min_periods=window).sum()
+        vol_frame = matching_vol20 if window <= 10 else matching_vol60
+        norm_ret_frames.append(
+            _rename_ret_columns(
+                _safe_divide(ret_frame, vol_frame),
+                f"norm_ret{window}_",
+            )
+        )
+
+    log("Adding reversal and USD common-factor features")
+    reversal_frames = _build_reversal_features(wide_close, windows=(5, 10, 20, 60))
+    usd_regime_df, usd_residual_df = _build_usd_factor_features(wide_ret)
+    usd_resid_rank_df = usd_residual_df.rank(axis=1, pct=True).rename(
+        columns=lambda c: c.replace("usd_resid_", "rank_usd_resid_", 1)
+    )
+    regime_interaction_frames = [
+        _rename_ret_columns(wide_ret.mul(regime_df["market_vol20"], axis=0), "ret_x_market_vol20_"),
+        _rename_ret_columns(ret20.mul(regime_df["avg_corr20"], axis=0), "ret20_x_avg_corr20_"),
+        _rename_ret_columns(ret20.mul(usd_regime_df["usd_factor_mom20"], axis=0), "ret20_x_usd_mom20_"),
+    ]
 
     rank_ret = wide_ret.rank(axis=1, pct=True)
     prev_top1_df = rank_ret.eq(rank_ret.max(axis=1), axis=0).shift(1).astype(float).rename(
@@ -233,8 +359,10 @@ def build_feature_dataset(
 
     feature_frames = [
         wide,
+        multi_ret_df,
         *corr_frames,
         *rs_frames,
+        *multi_rs_frames,
         *rank_frames,
         regime_df,
         pca_df,
@@ -246,6 +374,12 @@ def build_feature_dataset(
         zmom10_df,
         norm_mom5_df,
         norm_mom10_df,
+        *norm_ret_frames,
+        *reversal_frames,
+        usd_regime_df,
+        usd_residual_df,
+        usd_resid_rank_df,
+        *regime_interaction_frames,
         prev_top1_df,
         rank_persist_df,
         signal_stability_df,

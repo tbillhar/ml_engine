@@ -3,11 +3,11 @@
 FIT_DAYS = 180
 MODEL_FIT_WINDOWS = [30, 60, 90, 120, 150, 180]
 STEP_DAYS = 30
-REBALANCE_DAYS = 1
-HORIZON = 1
+REBALANCE_DAYS = 7
+HORIZON = 7
 TRANSACTION_LOSS_PCT = 0.025
 TRADING_DAYS_PER_YEAR = 260
-HOLDOUT_DAYS = 30
+HOLDOUT_DAYS = 5000
 LIVE_MODEL = "specialist_ensemble"
 SPECIALIST_WEIGHTING_MODE = "sticky_winner"
 SPECIALIST_ENSEMBLE_MEMBERS = [
@@ -22,7 +22,7 @@ SPECIALIST_WEIGHT_LOOKBACK_DAYS = 30
 SPECIALIST_MIN_MODEL_HOLD_DAYS = 5
 SPECIALIST_SWITCH_MARGIN_MIN_AVG_EV = 0.0
 SPECIALIST_SWITCH_REQUIRE_POSITIVE_EV = True
-RETRAIN_DETERIORATION_LOOKBACK_DAYS = 20
+RETRAIN_DETERIORATION_LOOKBACK_DAYS = 30
 RETRAIN_DETERIORATION_MIN_WIN_RATE = 0.45
 RETRAIN_DETERIORATION_MAX_AVG_EV = 0.0
 RAW_DATA_FILENAME = "fx_raw_ohlc.csv"
@@ -62,6 +62,12 @@ FX_PAIRS = [
 
 PAIR_PREFIXES = [
     "ret_",
+    "ret3_",
+    "ret5_",
+    "ret7_",
+    "ret10_",
+    "ret15_",
+    "ret20_",
     "vol30_",
     "mom5_",
     "mom10_",
@@ -70,10 +76,19 @@ PAIR_PREFIXES = [
     "corr60_",
     "corr120_",
     "rs1_",
+    "rs3_",
     "rs5_",
+    "rs7_",
     "rs10_",
+    "rs15_",
     "rs20_",
     "rank_ret_",
+    "rank_ret3_",
+    "rank_ret5_",
+    "rank_ret7_",
+    "rank_ret10_",
+    "rank_ret15_",
+    "rank_ret20_",
     "rank_mom5_",
     "rank_mom10_",
     "rank_vol30_",
@@ -85,6 +100,29 @@ PAIR_PREFIXES = [
     "zmom10_20_",
     "norm_mom5_",
     "norm_mom10_",
+    "norm_ret3_",
+    "norm_ret5_",
+    "norm_ret7_",
+    "norm_ret10_",
+    "norm_ret15_",
+    "norm_ret20_",
+    "dist_high5_",
+    "dist_high10_",
+    "dist_high20_",
+    "dist_high60_",
+    "dist_low5_",
+    "dist_low10_",
+    "dist_low20_",
+    "dist_low60_",
+    "range_pos5_",
+    "range_pos10_",
+    "range_pos20_",
+    "range_pos60_",
+    "usd_resid_",
+    "rank_usd_resid_",
+    "ret_x_market_vol20_",
+    "ret20_x_avg_corr20_",
+    "ret20_x_usd_mom20_",
     "prev_top1_",
     "rank_persist5_",
     "signal_stability5_",
