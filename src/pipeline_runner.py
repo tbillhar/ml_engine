@@ -247,8 +247,9 @@ def diagnostics_guide_text(
             "- model_prediction_correlation.csv: holdout prediction correlation matrix.",
             "- top1_pick_overlap.csv: fraction of holdout dates where each pair of models picked the same Top-1 pair.",
             "- model_switch_log.csv: daily active specialist model and switch/stay reason for the specialist router.",
-            "- model_opportunity_analysis.csv: daily rolling view of whether any model had positive recent edge and whether the router picked it.",
+            "- model_opportunity_analysis.csv: daily rolling view of whether any model had positive recent rebalance-return edge and whether the router picked it.",
             "- model_opportunity_rebalance_analysis.csv: same opportunity view filtered to actionable rebalance dates.",
+            "- router_rank_forward_diagnostic.csv: rebalance-date comparison of forward realized return for the trailing rank-1 router candidate versus ranks 2-5.",
             "- ensemble_benefit.csv: Top-1 ensemble improvements versus the best single non-ensemble model.",
             "- diagnostics_summary.txt: concise holdout observations shown in the GUI.",
             "",
@@ -256,7 +257,7 @@ def diagnostics_guide_text(
             "- pred_ensemble: fixed-weight broad blend of lgbm_deep, logreg, and rf scores.",
             (
                 f"- pred_specialist_ensemble: daily rank-percentile blend of {specialist_text}, "
-                f"weighted by trailing realized Top-1 success over the prior {lookback_text} out-of-sample dates "
+                f"weighted by trailing realized rebalance outcomes over the prior {lookback_text} out-of-sample days "
                 f"using '{weighting_mode_text}' mode. Sticky router candidates: {router_candidates_text}. Sticky settings: min hold {min_hold_text}, "
                 f"switch margin {switch_margin_text}, require positive EV {positive_ev_text}."
             ),
@@ -298,19 +299,25 @@ def build_model_opportunity_analysis(
     pred_df: pd.DataFrame,
     model_cols: list[str],
     lookback_days: int,
+    transaction_loss_pct: float,
     rebalance_days: int | None = None,
 ) -> pd.DataFrame:
-    """Measure whether any model had recent positive Top-1 opportunity and whether the router found it."""
+    """Measure whether any model had recent positive rebalance opportunity and whether the router found it."""
     date_order = sorted(pred_df["Date"].unique())
     model_return_history: dict[str, list[float]] = {model_col: [] for model_col in model_cols}
     rows: list[dict[str, float | int | str | pd.Timestamp]] = []
+    effective_rebalance_days = 1 if rebalance_days is None else rebalance_days
+    lookback_observations = rebalance_history_lookback_observations(
+        lookback_days,
+        effective_rebalance_days,
+    )
 
     for date_idx, current_date in enumerate(date_order):
         date_slice = pred_df[pred_df["Date"] == current_date]
         trailing_scores: dict[str, float] = {}
         trailing_win_rates: dict[str, float] = {}
         for model_col in model_cols:
-            history_slice = model_return_history[model_col][-lookback_days:]
+            history_slice = model_return_history[model_col][-lookback_observations:]
             if history_slice:
                 trailing = np.array(history_slice, dtype=float)
                 trailing_scores[model_col] = float(np.mean(trailing))
@@ -322,28 +329,28 @@ def build_model_opportunity_analysis(
         finite_scores = {model: score for model, score in trailing_scores.items() if np.isfinite(score)}
         if finite_scores:
             best_trailing_model = max(finite_scores, key=finite_scores.get)
-            best_trailing_avg_ev = finite_scores[best_trailing_model]
+            best_trailing_avg_return = finite_scores[best_trailing_model]
             best_trailing_win_rate = trailing_win_rates[best_trailing_model]
             positive_model_count = int(sum(score > 0 for score in finite_scores.values()))
             all_models_negative = int(all(score <= 0 for score in finite_scores.values()))
         else:
             best_trailing_model = ""
-            best_trailing_avg_ev = np.nan
+            best_trailing_avg_return = np.nan
             best_trailing_win_rate = np.nan
             positive_model_count = 0
             all_models_negative = 0
 
         active_router_model = ""
-        active_router_avg_ev = np.nan
+        active_router_avg_return = np.nan
         active_router_win_rate = np.nan
         router_regret_vs_best = np.nan
         if "specialist_ensemble_active_model" in date_slice.columns:
             active_router_model = str(date_slice["specialist_ensemble_active_model"].iloc[0] or "")
             if active_router_model in trailing_scores:
-                active_router_avg_ev = trailing_scores[active_router_model]
+                active_router_avg_return = trailing_scores[active_router_model]
                 active_router_win_rate = trailing_win_rates[active_router_model]
-                if np.isfinite(best_trailing_avg_ev) and np.isfinite(active_router_avg_ev):
-                    router_regret_vs_best = best_trailing_avg_ev - active_router_avg_ev
+                if np.isfinite(best_trailing_avg_return) and np.isfinite(active_router_avg_return):
+                    router_regret_vs_best = best_trailing_avg_return - active_router_avg_return
 
         is_rebalance_date = rebalance_days is None or date_idx % rebalance_days == 0
         if is_rebalance_date:
@@ -351,22 +358,25 @@ def build_model_opportunity_analysis(
                 {
                     "Date": current_date,
                     "best_trailing_model": best_trailing_model,
-                    "best_trailing_avg_ev": best_trailing_avg_ev,
+                    "best_trailing_avg_return": best_trailing_avg_return,
                     "best_trailing_win_rate": best_trailing_win_rate,
                     "active_router_model": active_router_model,
-                    "active_router_avg_ev": active_router_avg_ev,
+                    "active_router_avg_return": active_router_avg_return,
                     "active_router_win_rate": active_router_win_rate,
                     "router_regret_vs_best": router_regret_vs_best,
                     "positive_model_count": positive_model_count,
                     "all_models_negative": all_models_negative,
                     "models_evaluated": len(model_cols),
-                    "is_rebalance_date": int(rebalance_days is not None),
+                    "is_rebalance_date": int(is_rebalance_date),
                 }
             )
 
-        for model_col in model_cols:
-            chosen_row = date_slice.sort_values(model_col, ascending=False).iloc[0]
-            model_return_history[model_col].append(float(chosen_row["ev_target"]))
+        if is_rebalance_date:
+            for model_col in model_cols:
+                chosen_row = date_slice.sort_values(model_col, ascending=False).iloc[0]
+                model_return_history[model_col].append(
+                    realized_rebalance_return(chosen_row, transaction_loss_pct)
+                )
 
     opportunity_df = pd.DataFrame(rows)
     if not opportunity_df.empty:
@@ -374,6 +384,76 @@ def build_model_opportunity_analysis(
             opportunity_df["best_trailing_model"].ne(opportunity_df["best_trailing_model"].shift()).astype(int)
         )
     return opportunity_df
+
+
+def build_router_rank_forward_diagnostic(
+    pred_df: pd.DataFrame,
+    model_cols: list[str],
+    lookback_days: int,
+    rebalance_days: int,
+    transaction_loss_pct: float,
+) -> pd.DataFrame:
+    """Compare forward realized return of trailing rank-1 candidate versus ranks 2-5 on rebalance dates."""
+    date_order = sorted(pred_df["Date"].unique())
+    model_return_history: dict[str, list[float]] = {model_col: [] for model_col in model_cols}
+    lookback_observations = rebalance_history_lookback_observations(lookback_days, rebalance_days)
+    rows: list[dict[str, float | int | str | pd.Timestamp]] = []
+
+    for date_idx, current_date in enumerate(date_order):
+        date_slice = pred_df[pred_df["Date"] == current_date]
+        if date_idx % rebalance_days == 0:
+            trailing_scores: dict[str, float] = {}
+            for model_col in model_cols:
+                history_slice = model_return_history[model_col][-lookback_observations:]
+                trailing_scores[model_col] = float(np.mean(history_slice)) if history_slice else np.nan
+
+            ranked_models = [
+                model_col
+                for model_col, score in sorted(
+                    trailing_scores.items(),
+                    key=lambda item: (-np.inf if not np.isfinite(item[1]) else item[1]),
+                    reverse=True,
+                )
+                if np.isfinite(score)
+            ]
+            if ranked_models:
+                top1_model = ranked_models[0]
+                top1_row = date_slice.sort_values(top1_model, ascending=False).iloc[0]
+                top1_forward_return = realized_rebalance_return(top1_row, transaction_loss_pct)
+                rank2_5_models = ranked_models[1:5]
+                rank2_5_forward_returns = []
+                for model_col in rank2_5_models:
+                    chosen_row = date_slice.sort_values(model_col, ascending=False).iloc[0]
+                    rank2_5_forward_returns.append(
+                        realized_rebalance_return(chosen_row, transaction_loss_pct)
+                    )
+                rank2_5_avg_forward_return = (
+                    float(np.mean(rank2_5_forward_returns)) if rank2_5_forward_returns else np.nan
+                )
+                rows.append(
+                    {
+                        "Date": current_date,
+                        "top1_model": top1_model,
+                        "top1_trailing_avg_return": trailing_scores[top1_model],
+                        "top1_forward_return": top1_forward_return,
+                        "rank2_5_models": "|".join(rank2_5_models),
+                        "rank2_5_avg_forward_return": rank2_5_avg_forward_return,
+                        "top1_minus_rank2_5_forward_return": (
+                            top1_forward_return - rank2_5_avg_forward_return
+                            if np.isfinite(rank2_5_avg_forward_return)
+                            else np.nan
+                        ),
+                        "ranked_model_count": len(ranked_models),
+                    }
+                )
+
+            for model_col in model_cols:
+                chosen_row = date_slice.sort_values(model_col, ascending=False).iloc[0]
+                model_return_history[model_col].append(
+                    realized_rebalance_return(chosen_row, transaction_loss_pct)
+                )
+
+    return pd.DataFrame(rows)
 
 
 def build_model_top1_curves(
@@ -608,6 +688,16 @@ def build_top_selection_diagnostics(
             }
         )
     return pd.DataFrame(rows)
+
+
+def rebalance_history_lookback_observations(lookback_days: int, rebalance_days: int) -> int:
+    """Convert a day-based lookback into rebalance-observation count."""
+    return max(1, int(np.ceil(float(lookback_days) / float(max(rebalance_days, 1)))))
+
+
+def realized_rebalance_return(chosen_row: pd.Series, transaction_loss_pct: float) -> float:
+    """Net realized holding-period return for a rebalance-date top pick."""
+    return float(chosen_row["future_ret"]) - (transaction_loss_pct / 100.0)
 
 
 def build_top1_pick_overlap(pred_df: pd.DataFrame, model_cols: list[str]) -> pd.DataFrame:
@@ -869,7 +959,9 @@ def run_pipeline(
         fit_days=fit_days,
         model_fit_windows=model_fit_windows,
         step_days=step_days,
+        rebalance_days=rebalance_days,
         holdout_days=holdout_days,
+        transaction_loss_pct=transaction_loss_pct,
         live_model=live_model,
         specialist_weighting_mode=specialist_weighting_mode,
         specialist_ensemble_models=specialist_ensemble_models,
@@ -906,19 +998,29 @@ def run_pipeline(
     log("Computing model correlation and ensemble benefit diagnostics")
     eval_pred_df = holdout_pred_df
     model_cols = numeric_prediction_columns(eval_pred_df)
+    router_candidate_cols = [col for col in model_cols if col != "pred_specialist_ensemble"]
     correlation_df = eval_pred_df[model_cols].corr()
     spearman_correlation_df = eval_pred_df[model_cols].corr(method="spearman")
     top1_overlap_df = build_top1_pick_overlap(eval_pred_df, model_cols=model_cols)
     model_opportunity_df = build_model_opportunity_analysis(
         eval_pred_df,
-        model_cols=[col for col in model_cols if col != "pred_specialist_ensemble"],
+        model_cols=router_candidate_cols,
         lookback_days=specialist_weight_lookback_days,
+        transaction_loss_pct=transaction_loss_pct,
     )
     model_opportunity_rebalance_df = build_model_opportunity_analysis(
         eval_pred_df,
-        model_cols=[col for col in model_cols if col != "pred_specialist_ensemble"],
+        model_cols=router_candidate_cols,
+        lookback_days=specialist_weight_lookback_days,
+        transaction_loss_pct=transaction_loss_pct,
+        rebalance_days=rebalance_days,
+    )
+    router_rank_forward_df = build_router_rank_forward_diagnostic(
+        eval_pred_df,
+        model_cols=router_candidate_cols,
         lookback_days=specialist_weight_lookback_days,
         rebalance_days=rebalance_days,
+        transaction_loss_pct=transaction_loss_pct,
     )
     leaderboard_df, holdout_curves = build_model_top1_curves(
         eval_pred_df,
@@ -1025,6 +1127,7 @@ def run_pipeline(
     model_switch_log_df.to_csv(output_dir / "model_switch_log.csv", index=False)
     model_opportunity_df.to_csv(output_dir / "model_opportunity_analysis.csv", index=False)
     model_opportunity_rebalance_df.to_csv(output_dir / "model_opportunity_rebalance_analysis.csv", index=False)
+    router_rank_forward_df.to_csv(output_dir / "router_rank_forward_diagnostic.csv", index=False)
     model_diagnostics_df.to_csv(output_dir / "model_diagnostics.csv", index=False)
     ensemble_benefit_df.to_csv(output_dir / "ensemble_benefit.csv", index=False)
     formatted_performance_summary_csv(leaderboard_df).to_csv(output_dir / "performance_summary.csv", index=False)
