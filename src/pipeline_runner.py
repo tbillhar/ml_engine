@@ -278,13 +278,23 @@ def diagnostics_guide_text(
     )
 
 
-def selected_trade_rows(pred_df: pd.DataFrame, pred_col: str, rebalance_days: int) -> pd.DataFrame:
-    """Return the Top-1 rows selected on the configured rebalance schedule."""
+def selected_trade_rows(
+    pred_df: pd.DataFrame,
+    pred_col: str,
+    rebalance_days: int,
+    ascending: bool = False,
+) -> pd.DataFrame:
+    """Return the selected Top-1/Bottom-1 rows on the configured rebalance schedule."""
     selected_rows = []
     for idx, (_, grp) in enumerate(pred_df.groupby("Date", sort=True)):
-        if idx % rebalance_days != 0:
+        is_rebalance_date = (
+            bool(grp["is_rebalance_date"].iloc[0])
+            if "is_rebalance_date" in grp.columns
+            else idx % rebalance_days == 0
+        )
+        if not is_rebalance_date:
             continue
-        selected_rows.append(grp.sort_values(pred_col, ascending=False).head(1))
+        selected_rows.append(grp.sort_values(pred_col, ascending=ascending).head(1))
     return pd.concat(selected_rows, ignore_index=True) if selected_rows else pred_df.iloc[0:0].copy()
 
 
@@ -295,11 +305,19 @@ def cash_gate_column_for_model(pred_df: pd.DataFrame, model_col: str) -> str | N
     return None
 
 
+def filter_frame_to_dates(df: pd.DataFrame, eval_dates: set[pd.Timestamp] | None) -> pd.DataFrame:
+    """Return a frame restricted to the evaluation dates, preserving order."""
+    if eval_dates is None:
+        return df.copy()
+    return df[df["Date"].isin(eval_dates)].copy()
+
+
 def build_model_opportunity_analysis(
     pred_df: pd.DataFrame,
     model_cols: list[str],
     lookback_days: int,
     transaction_loss_pct: float,
+    eval_dates: set[pd.Timestamp] | None = None,
     rebalance_days: int | None = None,
 ) -> pd.DataFrame:
     """Measure whether any model had recent positive rebalance opportunity and whether the router found it."""
@@ -352,8 +370,16 @@ def build_model_opportunity_analysis(
                 if np.isfinite(best_trailing_avg_return) and np.isfinite(active_router_avg_return):
                     router_regret_vs_best = best_trailing_avg_return - active_router_avg_return
 
-        is_rebalance_date = rebalance_days is None or date_idx % rebalance_days == 0
-        if is_rebalance_date:
+        actual_rebalance_date = (
+            bool(date_slice["is_rebalance_date"].iloc[0])
+            if "is_rebalance_date" in date_slice.columns
+            else (rebalance_days is None or date_idx % rebalance_days == 0)
+        )
+        emit_row = (
+            (eval_dates is None or current_date in eval_dates)
+            and (rebalance_days is None or actual_rebalance_date)
+        )
+        if emit_row:
             rows.append(
                 {
                     "Date": current_date,
@@ -367,11 +393,11 @@ def build_model_opportunity_analysis(
                     "positive_model_count": positive_model_count,
                     "all_models_negative": all_models_negative,
                     "models_evaluated": len(model_cols),
-                    "is_rebalance_date": int(is_rebalance_date),
+                    "is_rebalance_date": int(actual_rebalance_date),
                 }
             )
 
-        if is_rebalance_date:
+        if actual_rebalance_date:
             for model_col in model_cols:
                 chosen_row = date_slice.sort_values(model_col, ascending=False).iloc[0]
                 model_return_history[model_col].append(
@@ -392,6 +418,7 @@ def build_router_rank_forward_diagnostic(
     lookback_days: int,
     rebalance_days: int,
     transaction_loss_pct: float,
+    eval_dates: set[pd.Timestamp] | None = None,
 ) -> pd.DataFrame:
     """Compare forward realized return of trailing rank-1 candidate versus ranks 2-5 on rebalance dates."""
     date_order = sorted(pred_df["Date"].unique())
@@ -401,7 +428,12 @@ def build_router_rank_forward_diagnostic(
 
     for date_idx, current_date in enumerate(date_order):
         date_slice = pred_df[pred_df["Date"] == current_date]
-        if date_idx % rebalance_days == 0:
+        is_rebalance_date = (
+            bool(date_slice["is_rebalance_date"].iloc[0])
+            if "is_rebalance_date" in date_slice.columns
+            else date_idx % rebalance_days == 0
+        )
+        if is_rebalance_date:
             trailing_scores: dict[str, float] = {}
             for model_col in model_cols:
                 history_slice = model_return_history[model_col][-lookback_observations:]
@@ -430,22 +462,23 @@ def build_router_rank_forward_diagnostic(
                 rank2_5_avg_forward_return = (
                     float(np.mean(rank2_5_forward_returns)) if rank2_5_forward_returns else np.nan
                 )
-                rows.append(
-                    {
-                        "Date": current_date,
-                        "top1_model": top1_model,
-                        "top1_trailing_avg_return": trailing_scores[top1_model],
-                        "top1_forward_return": top1_forward_return,
-                        "rank2_5_models": "|".join(rank2_5_models),
-                        "rank2_5_avg_forward_return": rank2_5_avg_forward_return,
-                        "top1_minus_rank2_5_forward_return": (
-                            top1_forward_return - rank2_5_avg_forward_return
-                            if np.isfinite(rank2_5_avg_forward_return)
-                            else np.nan
-                        ),
-                        "ranked_model_count": len(ranked_models),
-                    }
-                )
+                if eval_dates is None or current_date in eval_dates:
+                    rows.append(
+                        {
+                            "Date": current_date,
+                            "top1_model": top1_model,
+                            "top1_trailing_avg_return": trailing_scores[top1_model],
+                            "top1_forward_return": top1_forward_return,
+                            "rank2_5_models": "|".join(rank2_5_models),
+                            "rank2_5_avg_forward_return": rank2_5_avg_forward_return,
+                            "top1_minus_rank2_5_forward_return": (
+                                top1_forward_return - rank2_5_avg_forward_return
+                                if np.isfinite(rank2_5_avg_forward_return)
+                                else np.nan
+                            ),
+                            "ranked_model_count": len(ranked_models),
+                        }
+                    )
 
             for model_col in model_cols:
                 chosen_row = date_slice.sort_values(model_col, ascending=False).iloc[0]
@@ -462,11 +495,15 @@ def build_model_top1_curves(
     transaction_loss_pct: float,
     trading_days_per_year: int,
     rebalance_days: int,
+    eval_dates: set[pd.Timestamp] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
     """Build Top-1/Bottom-1 leaderboard rows and cumulative curves for all models."""
     rows: list[dict[str, float | str]] = []
     curves: dict[str, pd.DataFrame] = {}
-    eq_df = compute_equal_weight_pnl(pred_df, transaction_loss_pct=transaction_loss_pct)
+    eq_df = filter_frame_to_dates(
+        compute_equal_weight_pnl(pred_df, transaction_loss_pct=transaction_loss_pct),
+        eval_dates,
+    )
     eq_stats = perf_stats(eq_df, trading_days_per_year=trading_days_per_year)
     for model_col in model_cols:
         cash_gate_col = cash_gate_column_for_model(pred_df, model_col)
@@ -478,6 +515,7 @@ def build_model_top1_curves(
             rebalance_days=rebalance_days,
             cash_gate_col=cash_gate_col,
         )
+        pnl_df = filter_frame_to_dates(pnl_df, eval_dates)
         stats = perf_stats(pnl_df, trading_days_per_year=trading_days_per_year)
         excess_df = compute_top_k_excess_vs_equal_weight_pnl(
             pred_df,
@@ -487,6 +525,7 @@ def build_model_top1_curves(
             rebalance_days=rebalance_days,
             cash_gate_col=cash_gate_col,
         )
+        excess_df = filter_frame_to_dates(excess_df, eval_dates)
         excess_stats = perf_stats(excess_df, trading_days_per_year=trading_days_per_year)
         spread_df = compute_top_bottom_spread_pnl(
             pred_df,
@@ -496,6 +535,7 @@ def build_model_top1_curves(
             rebalance_days=rebalance_days,
             cash_gate_col=cash_gate_col,
         )
+        spread_df = filter_frame_to_dates(spread_df, eval_dates)
         spread_stats = perf_stats(spread_df, trading_days_per_year=trading_days_per_year)
         rows.append(
             {
@@ -521,6 +561,7 @@ def build_model_top1_curves(
             rebalance_days=rebalance_days,
             cash_gate_col=cash_gate_col,
         )
+        bottom_df = filter_frame_to_dates(bottom_df, eval_dates)
         bottom_stats = perf_stats(bottom_df, trading_days_per_year=trading_days_per_year)
         bottom_excess_df = compute_bottom_k_excess_vs_equal_weight_pnl(
             pred_df,
@@ -530,6 +571,7 @@ def build_model_top1_curves(
             rebalance_days=rebalance_days,
             cash_gate_col=cash_gate_col,
         )
+        bottom_excess_df = filter_frame_to_dates(bottom_excess_df, eval_dates)
         bottom_excess_stats = perf_stats(bottom_excess_df, trading_days_per_year=trading_days_per_year)
         bottom_top_df = compute_bottom_top_spread_pnl(
             pred_df,
@@ -539,6 +581,7 @@ def build_model_top1_curves(
             rebalance_days=rebalance_days,
             cash_gate_col=cash_gate_col,
         )
+        bottom_top_df = filter_frame_to_dates(bottom_top_df, eval_dates)
         bottom_top_stats = perf_stats(bottom_top_df, trading_days_per_year=trading_days_per_year)
         rows.append(
             {
@@ -584,6 +627,7 @@ def build_top_selection_diagnostics(
     transaction_loss_pct: float,
     trading_days_per_year: int,
     rebalance_days: int,
+    eval_dates: set[pd.Timestamp] | None = None,
 ) -> pd.DataFrame:
     """Compare models as Top-1/Bottom-1 selectors on the evaluation slice."""
     rows: list[dict[str, float | str]] = []
@@ -597,6 +641,7 @@ def build_top_selection_diagnostics(
             rebalance_days=rebalance_days,
             cash_gate_col=cash_gate_col,
         )
+        pnl_df = filter_frame_to_dates(pnl_df, eval_dates)
         stats = perf_stats(pnl_df, trading_days_per_year=trading_days_per_year)
         excess_df = compute_top_k_excess_vs_equal_weight_pnl(
             pred_df,
@@ -606,6 +651,7 @@ def build_top_selection_diagnostics(
             rebalance_days=rebalance_days,
             cash_gate_col=cash_gate_col,
         )
+        excess_df = filter_frame_to_dates(excess_df, eval_dates)
         excess_stats = perf_stats(excess_df, trading_days_per_year=trading_days_per_year)
         spread_df = compute_top_bottom_spread_pnl(
             pred_df,
@@ -615,8 +661,10 @@ def build_top_selection_diagnostics(
             rebalance_days=rebalance_days,
             cash_gate_col=cash_gate_col,
         )
+        spread_df = filter_frame_to_dates(spread_df, eval_dates)
         spread_stats = perf_stats(spread_df, trading_days_per_year=trading_days_per_year)
         selected_df = selected_trade_rows(pred_df, pred_col=model_col, rebalance_days=rebalance_days)
+        selected_df = filter_frame_to_dates(selected_df, eval_dates)
         realized_win_rate = float(selected_df["profit_target"].mean()) if not selected_df.empty else np.nan
         avg_selected_next_ret = float(selected_df["next_ret"].mean()) if not selected_df.empty else np.nan
         rows.append(
@@ -644,12 +692,15 @@ def build_top_selection_diagnostics(
             rebalance_days=rebalance_days,
             cash_gate_col=cash_gate_col,
         )
+        bottom_df = filter_frame_to_dates(bottom_df, eval_dates)
         bottom_stats = perf_stats(bottom_df, trading_days_per_year=trading_days_per_year)
-        bottom_selected_df = (
-            pred_df.sort_values(["Date", model_col], ascending=[True, True])
-            .groupby("Date", sort=True)
-            .head(1)
+        bottom_selected_df = selected_trade_rows(
+            pred_df,
+            pred_col=model_col,
+            rebalance_days=rebalance_days,
+            ascending=True,
         )
+        bottom_selected_df = filter_frame_to_dates(bottom_selected_df, eval_dates)
         bottom_excess_df = compute_bottom_k_excess_vs_equal_weight_pnl(
             pred_df,
             pred_col=model_col,
@@ -658,6 +709,7 @@ def build_top_selection_diagnostics(
             rebalance_days=rebalance_days,
             cash_gate_col=cash_gate_col,
         )
+        bottom_excess_df = filter_frame_to_dates(bottom_excess_df, eval_dates)
         bottom_excess_stats = perf_stats(bottom_excess_df, trading_days_per_year=trading_days_per_year)
         bottom_top_df = compute_bottom_top_spread_pnl(
             pred_df,
@@ -667,6 +719,7 @@ def build_top_selection_diagnostics(
             rebalance_days=rebalance_days,
             cash_gate_col=cash_gate_col,
         )
+        bottom_top_df = filter_frame_to_dates(bottom_top_df, eval_dates)
         bottom_top_stats = perf_stats(bottom_top_df, trading_days_per_year=trading_days_per_year)
         rows.append(
             {
@@ -978,6 +1031,7 @@ def run_pipeline(
 
     live_pred_col = resolve_live_prediction_column(live_model)
     research_pred_df, holdout_pred_df = split_holdout_period(pred_df, holdout_days=holdout_days)
+    holdout_dates = set(holdout_pred_df["Date"].unique())
     log(
         f"Using final {holdout_days} out-of-sample dates as holdout "
         f"({holdout_pred_df['Date'].min()} to {holdout_pred_df['Date'].max()})"
@@ -986,7 +1040,7 @@ def run_pipeline(
     log("Computing daily mark-to-market strategy series")
     set_progress(75)
     strategy_frame(
-        holdout_pred_df,
+        pred_df,
         pred_col=live_pred_col,
         transaction_loss_pct=transaction_loss_pct,
         trading_days_per_year=trading_days_per_year,
@@ -1003,31 +1057,35 @@ def run_pipeline(
     spearman_correlation_df = eval_pred_df[model_cols].corr(method="spearman")
     top1_overlap_df = build_top1_pick_overlap(eval_pred_df, model_cols=model_cols)
     model_opportunity_df = build_model_opportunity_analysis(
-        eval_pred_df,
+        pred_df,
         model_cols=router_candidate_cols,
         lookback_days=specialist_weight_lookback_days,
         transaction_loss_pct=transaction_loss_pct,
+        eval_dates=holdout_dates,
     )
     model_opportunity_rebalance_df = build_model_opportunity_analysis(
-        eval_pred_df,
+        pred_df,
         model_cols=router_candidate_cols,
         lookback_days=specialist_weight_lookback_days,
         transaction_loss_pct=transaction_loss_pct,
+        eval_dates=holdout_dates,
         rebalance_days=rebalance_days,
     )
     router_rank_forward_df = build_router_rank_forward_diagnostic(
-        eval_pred_df,
+        pred_df,
         model_cols=router_candidate_cols,
         lookback_days=specialist_weight_lookback_days,
         rebalance_days=rebalance_days,
         transaction_loss_pct=transaction_loss_pct,
+        eval_dates=holdout_dates,
     )
     leaderboard_df, holdout_curves = build_model_top1_curves(
-        eval_pred_df,
+        pred_df,
         model_cols=model_cols,
         transaction_loss_pct=transaction_loss_pct,
         trading_days_per_year=trading_days_per_year,
         rebalance_days=rebalance_days,
+        eval_dates=holdout_dates,
     )
     diagnostic_rows = []
     for model_col in model_cols:
@@ -1058,11 +1116,12 @@ def run_pipeline(
     )
     _ = build_score_bucket_diagnostics(eval_pred_df, model_cols)
     top_selection_df = build_top_selection_diagnostics(
-        eval_pred_df,
+        pred_df,
         model_cols=model_cols,
         transaction_loss_pct=transaction_loss_pct,
         trading_days_per_year=trading_days_per_year,
         rebalance_days=rebalance_days,
+        eval_dates=holdout_dates,
     )
     ensemble_benefit_df = build_ensemble_benefit(
         top_selection_df,

@@ -797,10 +797,14 @@ def run_walkforward_model(
                 f"{model_col}={specialist_weights[idx]:.3f}" for idx, model_col in enumerate(weighted_models)
             )
             day_sub["window_id"] = window_idx
+            day_sub["oos_day_index"] = processed_oos_days
+            day_sub["is_rebalance_date"] = int(is_rebalance_date)
             current_test_chunks.append(
                 day_sub[
                     [
                         "window_id",
+                        "oos_day_index",
+                        "is_rebalance_date",
                         *META_COLUMNS,
                         *prediction_cols,
                         "specialist_ensemble_active_model",

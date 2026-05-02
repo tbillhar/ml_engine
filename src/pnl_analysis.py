@@ -7,6 +7,13 @@ import numpy as np
 import pandas as pd
 
 
+def _should_rebalance(grp: pd.DataFrame, idx: int, rebalance_days: int, has_position_state: bool) -> bool:
+    """Use explicit rebalance flags when available, else fall back to positional cadence."""
+    if "is_rebalance_date" in grp.columns:
+        return bool(grp["is_rebalance_date"].iloc[0]) or not has_position_state
+    return (idx % rebalance_days == 0) or not has_position_state
+
+
 def _portfolio_turnover(
     previous_weights: dict[str, float],
     current_weights: dict[str, float],
@@ -79,7 +86,7 @@ def compute_top_k_pnl(
     held_avg_score = np.nan
     has_position_state = False
     for idx, (d, grp) in enumerate(df.groupby("Date", sort=True)):
-        should_rebalance = (idx % rebalance_days == 0) or not has_position_state
+        should_rebalance = _should_rebalance(grp, idx, rebalance_days, has_position_state)
         if should_rebalance:
             cash_gate_active = (
                 bool(grp[cash_gate_col].iloc[0])
@@ -274,7 +281,7 @@ def compute_top_bottom_spread_pnl(
     has_position_state = False
 
     for idx, (d, grp) in enumerate(df.groupby("Date", sort=True)):
-        should_rebalance = (idx % rebalance_days == 0) or not has_position_state
+        should_rebalance = _should_rebalance(grp, idx, rebalance_days, has_position_state)
         if should_rebalance:
             cash_gate_active = (
                 bool(grp[cash_gate_col].iloc[0])
