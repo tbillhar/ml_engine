@@ -20,6 +20,9 @@ from src.config import (
     RETRAIN_DETERIORATION_LOOKBACK_DAYS,
     RETRAIN_DETERIORATION_MAX_AVG_EV,
     RETRAIN_DETERIORATION_MIN_WIN_RATE,
+    ROUTER_FALLBACK_MODEL,
+    ROUTER_MIN_EDGE_OVER_NEXT,
+    ROUTER_SELECTION_MODE,
     SPECIALIST_ENSEMBLE_MEMBERS,
     SPECIALIST_MIN_MODEL_HOLD_DAYS,
     SPECIALIST_SWITCH_MARGIN_MIN_AVG_EV,
@@ -150,6 +153,23 @@ def parse_args() -> argparse.Namespace:
         help="Weighting mode for the specialist ensemble.",
     )
     parser.add_argument(
+        "--router-selection-mode",
+        default=ROUTER_SELECTION_MODE,
+        choices=["single", "top3_blend", "top5_blend"],
+        help="How the sticky router converts the trailing-ranked candidates into live exposure.",
+    )
+    parser.add_argument(
+        "--router-min-edge-over-next",
+        type=float,
+        default=ROUTER_MIN_EDGE_OVER_NEXT,
+        help="Minimum trailing edge required for the rank-1 candidate over the next-ranked candidate before using the router pick.",
+    )
+    parser.add_argument(
+        "--router-fallback-model",
+        default=ROUTER_FALLBACK_MODEL,
+        help="Fallback model to hold when the router conviction gate is not met.",
+    )
+    parser.add_argument(
         "--specialist-weight-lookback-days",
         type=int,
         default=SPECIALIST_WEIGHT_LOOKBACK_DAYS,
@@ -270,6 +290,9 @@ def main() -> None:
                 specialist_weighting_mode=args.specialist_weighting_mode,
                 specialist_ensemble_models=args.specialist_ensemble_members,
                 model_router_candidates=args.model_router_candidates,
+                router_selection_mode=args.router_selection_mode,
+                router_min_edge_over_next=args.router_min_edge_over_next,
+                router_fallback_model=args.router_fallback_model,
                 specialist_weight_lookback_days=args.specialist_weight_lookback_days,
                 specialist_min_model_hold_days=args.specialist_min_model_hold_days,
                 specialist_switch_margin_min_avg_ev=args.specialist_switch_margin_min_avg_ev,

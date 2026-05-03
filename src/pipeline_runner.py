@@ -176,6 +176,9 @@ def diagnostics_guide_text(
     specialist_weight_lookback_days: int | None = None,
     rebalance_days: int | None = None,
     specialist_weighting_mode: str | None = None,
+    router_selection_mode: str | None = None,
+    router_min_edge_over_next: float | None = None,
+    router_fallback_model: str | None = None,
     specialist_min_model_hold_days: int | None = None,
     specialist_switch_margin_min_avg_ev: float | None = None,
     specialist_switch_require_positive_ev: bool | None = None,
@@ -206,6 +209,13 @@ def diagnostics_guide_text(
     )
     rebalance_text = str(rebalance_days) if rebalance_days is not None else "configured rebalance"
     weighting_mode_text = specialist_weighting_mode or "configured weighting mode"
+    router_selection_text = router_selection_mode or "configured router selection mode"
+    router_min_edge_text = (
+        f"{router_min_edge_over_next:.6f}"
+        if router_min_edge_over_next is not None
+        else "configured router edge threshold"
+    )
+    router_fallback_text = router_fallback_model or "configured router fallback model"
     min_hold_text = str(specialist_min_model_hold_days) if specialist_min_model_hold_days is not None else "configured min hold"
     switch_margin_text = (
         f"{specialist_switch_margin_min_avg_ev:.6f}"
@@ -258,7 +268,8 @@ def diagnostics_guide_text(
             (
                 f"- pred_specialist_ensemble: daily rank-percentile blend of {specialist_text}, "
                 f"weighted by trailing realized rebalance outcomes over the prior {lookback_text} out-of-sample days "
-                f"using '{weighting_mode_text}' mode. Sticky router candidates: {router_candidates_text}. Sticky settings: min hold {min_hold_text}, "
+                f"using '{weighting_mode_text}' mode. Sticky router candidates: {router_candidates_text}. Router selection: {router_selection_text}; "
+                f"min edge over next {router_min_edge_text}; fallback model {router_fallback_text}. Sticky settings: min hold {min_hold_text}, "
                 f"switch margin {switch_margin_text}, require positive EV {positive_ev_text}."
             ),
             f"- Rebalancing: Top-1 strategies rebalance every {rebalance_text} day(s).",
@@ -949,6 +960,9 @@ def run_pipeline(
     holdout_days: int,
     live_model: str,
     specialist_weighting_mode: str,
+    router_selection_mode: str,
+    router_min_edge_over_next: float,
+    router_fallback_model: str,
     specialist_ensemble_models: list[str],
     model_router_candidates: list[str],
     specialist_weight_lookback_days: int,
@@ -1000,6 +1014,9 @@ def run_pipeline(
         f"step={step_days}, rebalance_days={rebalance_days}, holdout_days={holdout_days}, "
         f"live_model={live_model}, live_decision_mode=top1, "
         f"specialist_weighting_mode={specialist_weighting_mode}, "
+        f"router_selection_mode={router_selection_mode}, "
+        f"router_min_edge_over_next={router_min_edge_over_next}, "
+        f"router_fallback_model={router_fallback_model}, "
         f"specialist_ensemble_members={','.join(specialist_ensemble_models)}, "
         f"specialist_weight_lookback_days={specialist_weight_lookback_days}, "
         f"retrain_det_lookback_days={retrain_deterioration_lookback_days}, "
@@ -1017,6 +1034,9 @@ def run_pipeline(
         transaction_loss_pct=transaction_loss_pct,
         live_model=live_model,
         specialist_weighting_mode=specialist_weighting_mode,
+        router_selection_mode=router_selection_mode,
+        router_min_edge_over_next=router_min_edge_over_next,
+        router_fallback_model=router_fallback_model,
         specialist_ensemble_models=specialist_ensemble_models,
         model_router_candidates=model_router_candidates,
         specialist_weight_lookback_days=specialist_weight_lookback_days,
@@ -1143,6 +1163,9 @@ def run_pipeline(
                 "live_decision_mode": "top1",
                 "live_prediction_column": live_pred_col,
                 "specialist_weighting_mode": specialist_weighting_mode,
+                "router_selection_mode": router_selection_mode,
+                "router_min_edge_over_next": router_min_edge_over_next,
+                "router_fallback_model": router_fallback_model,
                 "specialist_ensemble_members": "|".join(specialist_ensemble_models),
                 "model_router_candidates": "|".join(model_router_candidates),
                 "specialist_weight_lookback_days": specialist_weight_lookback_days,
@@ -1164,6 +1187,7 @@ def run_pipeline(
             [
                 "Date",
                 "specialist_ensemble_active_model",
+                "specialist_ensemble_active_members",
                 "specialist_ensemble_switch_reason",
                 "specialist_ensemble_cash_gate",
                 "specialist_ensemble_weight_info",
@@ -1173,6 +1197,7 @@ def run_pipeline(
         .rename(
             columns={
                 "specialist_ensemble_active_model": "active_model",
+                "specialist_ensemble_active_members": "active_members",
                 "specialist_ensemble_switch_reason": "switch_reason",
                 "specialist_ensemble_cash_gate": "cash_gate",
                 "specialist_ensemble_weight_info": "weight_info",
@@ -1198,6 +1223,9 @@ def run_pipeline(
             specialist_weight_lookback_days,
             rebalance_days,
             specialist_weighting_mode,
+            router_selection_mode,
+            router_min_edge_over_next,
+            router_fallback_model,
             specialist_min_model_hold_days,
             specialist_switch_margin_min_avg_ev,
             specialist_switch_require_positive_ev,

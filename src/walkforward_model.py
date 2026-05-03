@@ -85,6 +85,32 @@ def realized_rebalance_outcome(chosen_row: pd.Series, transaction_loss_pct: floa
     return float(chosen_row["future_ret"]) - (transaction_loss_pct / 100.0)
 
 
+def router_selection_size(router_selection_mode: str) -> int:
+    """Return the number of routed models to blend."""
+    selection_sizes = {
+        "single": 1,
+        "top3_blend": 3,
+        "top5_blend": 5,
+    }
+    if router_selection_mode not in selection_sizes:
+        raise ValueError(
+            f"Unsupported ROUTER_SELECTION_MODE '{router_selection_mode}'. "
+            "Expected one of: single, top3_blend, top5_blend"
+        )
+    return selection_sizes[router_selection_mode]
+
+
+def equal_weights_for_indices(num_models: int, active_indices: tuple[int, ...]) -> np.ndarray:
+    """Return equal weights over the selected candidate indices."""
+    weights = np.zeros(num_models, dtype=float)
+    if not active_indices:
+        return weights
+    weight = 1.0 / len(active_indices)
+    for idx in active_indices:
+        weights[idx] = weight
+    return weights
+
+
 def make_xy(subdf: pd.DataFrame, date_list, feature_cols: list[str]):
     """Build sorted subset, design matrix, labels, and group sizes."""
     s = subdf[subdf["Date"].isin(date_list)].sort_values(["Date", "pair"])
@@ -457,59 +483,92 @@ def specialist_weights_from_history(
 def sticky_specialist_router_step(
     raw_scores: np.ndarray,
     ensemble_models: list[str],
-    previous_active_idx: int | None,
+    previous_active_indices: tuple[int, ...] | None,
     previous_hold_days: int,
+    router_selection_mode: str,
+    router_min_edge_over_next: float,
+    router_fallback_model: str,
     specialist_min_model_hold_days: int,
     specialist_switch_margin_min_avg_ev: float,
     specialist_switch_require_positive_ev: bool,
-) -> tuple[np.ndarray, int | None, int, str, bool]:
-    """Route to one active specialist with persistence and switching guards."""
-    equal_weight = 1.0 / len(ensemble_models)
+) -> tuple[np.ndarray, tuple[int, ...] | None, int, str, bool, int | None]:
+    """Route to one or more active specialists with persistence, edge gating, and fallback."""
+    fallback_idx = ensemble_models.index(router_fallback_model) if router_fallback_model in ensemble_models else None
+    selection_size = min(router_selection_size(router_selection_mode), len(ensemble_models))
+
+    def fallback_selection(reason: str) -> tuple[np.ndarray, tuple[int, ...] | None, int, str, bool, int | None]:
+        if fallback_idx is not None:
+            active_indices = (fallback_idx,)
+            return (
+                equal_weights_for_indices(len(ensemble_models), active_indices),
+                active_indices,
+                1,
+                reason,
+                False,
+                fallback_idx,
+            )
+        return np.zeros(len(ensemble_models), dtype=float), None, 0, "cash_no_fallback", True, None
+
     if np.all(np.isnan(raw_scores)):
-        return np.full(len(ensemble_models), equal_weight), previous_active_idx, previous_hold_days, "no_history_equal", False
+        return fallback_selection("fallback_no_history")
 
     filled = np.nan_to_num(raw_scores, nan=-np.inf)
-    leader_idx = int(np.argmax(filled))
+    ranked_indices = [int(idx) for idx in np.argsort(filled)[::-1] if np.isfinite(filled[idx])]
+    if not ranked_indices:
+        return fallback_selection("fallback_no_ranked_models")
+
+    leader_idx = ranked_indices[0]
     leader_score = filled[leader_idx]
-
-    if previous_active_idx is None or previous_active_idx >= len(ensemble_models):
-        if specialist_switch_require_positive_ev and leader_score <= 0:
-            return np.zeros(len(ensemble_models), dtype=float), None, 0, "cash_no_positive_model", True
-        weights = np.zeros(len(ensemble_models), dtype=float)
-        weights[leader_idx] = 1.0
-        return weights, leader_idx, 1, "init_leader", False
-
-    current_idx = previous_active_idx
-    current_score = filled[current_idx]
-    new_hold_days = previous_hold_days + 1
-
-    if leader_idx == current_idx:
-        if specialist_switch_require_positive_ev and leader_score <= 0:
-            return np.zeros(len(ensemble_models), dtype=float), None, 0, "cash_no_positive_model", True
-        weights = np.zeros(len(ensemble_models), dtype=float)
-        weights[current_idx] = 1.0
-        return weights, current_idx, new_hold_days, "stay_current_best", False
-
-    if previous_hold_days < specialist_min_model_hold_days:
-        if specialist_switch_require_positive_ev and np.nanmax(filled) <= 0:
-            return np.zeros(len(ensemble_models), dtype=float), None, 0, "cash_no_positive_model", True
-        weights = np.zeros(len(ensemble_models), dtype=float)
-        weights[current_idx] = 1.0
-        return weights, current_idx, new_hold_days, "hold_lock", False
+    next_score = filled[ranked_indices[1]] if len(ranked_indices) > 1 else -np.inf
+    leader_edge = leader_score - next_score if np.isfinite(next_score) else np.inf
+    challenger_indices = tuple(ranked_indices[:selection_size])
+    challenger_primary_idx = leader_idx
+    challenger_weights = equal_weights_for_indices(len(ensemble_models), challenger_indices)
+    challenger_reason = "init_leader" if previous_active_indices is None else "switch_margin"
+    challenger_cash_gate = False
 
     if specialist_switch_require_positive_ev and leader_score <= 0:
-        return np.zeros(len(ensemble_models), dtype=float), None, 0, "cash_no_positive_model", True
+        return fallback_selection("fallback_no_positive_leader")
+    if leader_edge < router_min_edge_over_next:
+        return fallback_selection("fallback_low_edge")
 
-    if not np.isfinite(current_score):
-        current_score = -np.inf
-    if leader_score <= current_score + specialist_switch_margin_min_avg_ev:
-        weights = np.zeros(len(ensemble_models), dtype=float)
-        weights[current_idx] = 1.0
-        return weights, current_idx, new_hold_days, "margin_not_met", False
+    if previous_active_indices is None:
+        return challenger_weights, challenger_indices, 1, challenger_reason, challenger_cash_gate, challenger_primary_idx
 
-    weights = np.zeros(len(ensemble_models), dtype=float)
-    weights[leader_idx] = 1.0
-    return weights, leader_idx, 1, "switch_margin", False
+    current_active_indices = tuple(idx for idx in previous_active_indices if idx < len(ensemble_models))
+    if not current_active_indices:
+        return challenger_weights, challenger_indices, 1, challenger_reason, challenger_cash_gate, challenger_primary_idx
+
+    current_primary_idx = current_active_indices[0]
+    current_best_score = max(filled[idx] for idx in current_active_indices) if current_active_indices else -np.inf
+    new_hold_days = previous_hold_days + 1
+
+    if challenger_indices == current_active_indices:
+        return challenger_weights, current_active_indices, new_hold_days, "stay_current_best", False, current_primary_idx
+
+    if previous_hold_days < specialist_min_model_hold_days:
+        return (
+            equal_weights_for_indices(len(ensemble_models), current_active_indices),
+            current_active_indices,
+            new_hold_days,
+            "hold_lock",
+            False,
+            current_primary_idx,
+        )
+
+    if not np.isfinite(current_best_score):
+        current_best_score = -np.inf
+    if leader_score <= current_best_score + specialist_switch_margin_min_avg_ev:
+        return (
+            equal_weights_for_indices(len(ensemble_models), current_active_indices),
+            current_active_indices,
+            new_hold_days,
+            "margin_not_met",
+            False,
+            current_primary_idx,
+        )
+
+    return challenger_weights, challenger_indices, 1, challenger_reason, challenger_cash_gate, challenger_primary_idx
 
 
 def add_specialist_ensemble_scores(
@@ -520,6 +579,9 @@ def add_specialist_ensemble_scores(
     rebalance_days: int,
     transaction_loss_pct: float,
     specialist_weighting_mode: str,
+    router_selection_mode: str,
+    router_min_edge_over_next: float,
+    router_fallback_model: str,
     specialist_min_model_hold_days: int,
     specialist_switch_margin_min_avg_ev: float,
     specialist_switch_require_positive_ev: bool,
@@ -552,9 +614,11 @@ def add_specialist_ensemble_scores(
 
     date_order = sorted(test_sub["Date"].unique())
     member_top1_returns: dict[str, list[float]] = {model_col: [] for model_col in router_models}
-    router_active_idx: int | None = None
+    router_active_indices: tuple[int, ...] | None = None
+    router_primary_idx: int | None = None
     router_hold_days = 0
     test_sub["specialist_ensemble_active_model"] = ""
+    test_sub["specialist_ensemble_active_members"] = ""
     test_sub["specialist_ensemble_switch_reason"] = ""
     test_sub["specialist_ensemble_weight_info"] = ""
     test_sub["specialist_ensemble_cash_gate"] = 0
@@ -580,15 +644,19 @@ def add_specialist_ensemble_scores(
             if specialist_weighting_mode == "sticky_winner":
                 (
                     normalized_weights,
-                    router_active_idx,
+                    router_active_indices,
                     router_hold_days,
                     switch_reason,
                     cash_gate,
+                    router_primary_idx,
                 ) = sticky_specialist_router_step(
                     raw_scores=raw_scores,
                     ensemble_models=router_models,
-                    previous_active_idx=router_active_idx,
+                    previous_active_indices=router_active_indices,
                     previous_hold_days=router_hold_days,
+                    router_selection_mode=router_selection_mode,
+                    router_min_edge_over_next=router_min_edge_over_next,
+                    router_fallback_model=router_fallback_model,
                     specialist_min_model_hold_days=specialist_min_model_hold_days,
                     specialist_switch_margin_min_avg_ev=specialist_switch_margin_min_avg_ev,
                     specialist_switch_require_positive_ev=specialist_switch_require_positive_ev,
@@ -608,8 +676,14 @@ def add_specialist_ensemble_scores(
             weighted_score += normalized_weights[idx] * test_sub.loc[date_mask, ranked_cols[model_col]].to_numpy()
         test_sub.loc[date_mask, "pred_specialist_ensemble"] = weighted_score
 
-        active_model = router_models[router_active_idx] if router_active_idx is not None else ""
+        active_model = router_models[router_primary_idx] if router_primary_idx is not None else ""
+        active_members = (
+            "|".join(router_models[idx] for idx in router_active_indices)
+            if router_active_indices
+            else ""
+        )
         test_sub.loc[date_mask, "specialist_ensemble_active_model"] = active_model
+        test_sub.loc[date_mask, "specialist_ensemble_active_members"] = active_members
         test_sub.loc[date_mask, "specialist_ensemble_switch_reason"] = (
             current_switch_reason if is_rebalance_date else switch_reason
         )
@@ -640,6 +714,9 @@ def run_walkforward_model(
     transaction_loss_pct: float,
     live_model: str,
     specialist_weighting_mode: str,
+    router_selection_mode: str,
+    router_min_edge_over_next: float,
+    router_fallback_model: str,
     specialist_ensemble_models: list[str],
     model_router_candidates: list[str],
     specialist_weight_lookback_days: int,
@@ -698,7 +775,8 @@ def run_walkforward_model(
     )
     current_cash_gate = False
     current_switch_reason = "no_history_equal"
-    router_active_idx: int | None = None
+    router_active_indices: tuple[int, ...] | None = None
+    router_primary_idx: int | None = None
     router_hold_days = 0
     fit_start = 0
     window_idx = 0
@@ -760,15 +838,19 @@ def run_walkforward_model(
                 if specialist_weighting_mode == "sticky_winner":
                     (
                         specialist_weights,
-                        router_active_idx,
+                        router_active_indices,
                         router_hold_days,
                         switch_reason,
                         cash_gate,
+                        router_primary_idx,
                     ) = sticky_specialist_router_step(
                         raw_scores=raw_scores,
                         ensemble_models=router_prediction_cols,
-                        previous_active_idx=router_active_idx,
+                        previous_active_indices=router_active_indices,
                         previous_hold_days=router_hold_days,
+                        router_selection_mode=router_selection_mode,
+                        router_min_edge_over_next=router_min_edge_over_next,
+                        router_fallback_model=router_fallback_model,
                         specialist_min_model_hold_days=specialist_min_model_hold_days,
                         specialist_switch_margin_min_avg_ev=specialist_switch_margin_min_avg_ev,
                         specialist_switch_require_positive_ev=specialist_switch_require_positive_ev,
@@ -787,7 +869,12 @@ def run_walkforward_model(
                 specialist_rank_sum += specialist_weights[idx] * rank_pct
             day_sub["pred_specialist_ensemble"] = specialist_rank_sum
             day_sub["specialist_ensemble_active_model"] = (
-                router_prediction_cols[router_active_idx] if router_active_idx is not None else ""
+                router_prediction_cols[router_primary_idx] if router_primary_idx is not None else ""
+            )
+            day_sub["specialist_ensemble_active_members"] = (
+                "|".join(router_prediction_cols[idx] for idx in router_active_indices)
+                if router_active_indices
+                else ""
             )
             day_sub["specialist_ensemble_switch_reason"] = (
                 current_switch_reason if is_rebalance_date else switch_reason
@@ -808,6 +895,7 @@ def run_walkforward_model(
                         *META_COLUMNS,
                         *prediction_cols,
                         "specialist_ensemble_active_model",
+                        "specialist_ensemble_active_members",
                         "specialist_ensemble_switch_reason",
                         "specialist_ensemble_cash_gate",
                         "specialist_ensemble_weight_info",
@@ -934,6 +1022,9 @@ def run_walkforward_model(
         rebalance_days,
         transaction_loss_pct,
         specialist_weighting_mode,
+        router_selection_mode,
+        router_min_edge_over_next,
+        router_fallback_model,
         specialist_min_model_hold_days,
         specialist_switch_margin_min_avg_ev,
         specialist_switch_require_positive_ev,

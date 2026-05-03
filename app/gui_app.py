@@ -54,6 +54,9 @@ from src.config import (
     RETRAIN_DETERIORATION_LOOKBACK_DAYS,
     RETRAIN_DETERIORATION_MAX_AVG_EV,
     RETRAIN_DETERIORATION_MIN_WIN_RATE,
+    ROUTER_FALLBACK_MODEL,
+    ROUTER_MIN_EDGE_OVER_NEXT,
+    ROUTER_SELECTION_MODE,
     SPECIALIST_ENSEMBLE_MEMBERS,
     SPECIALIST_MIN_MODEL_HOLD_DAYS,
     SPECIALIST_SWITCH_MARGIN_MIN_AVG_EV,
@@ -92,6 +95,9 @@ class PipelineWorker(QObject):
         specialist_weighting_mode: str,
         specialist_ensemble_members: list[str],
         model_router_candidates: list[str],
+        router_selection_mode: str,
+        router_min_edge_over_next: float,
+        router_fallback_model: str,
         specialist_weight_lookback_days: int,
         specialist_min_model_hold_days: int,
         specialist_switch_margin_min_avg_ev: float,
@@ -115,6 +121,9 @@ class PipelineWorker(QObject):
         self.specialist_weighting_mode = specialist_weighting_mode
         self.specialist_ensemble_members = specialist_ensemble_members
         self.model_router_candidates = model_router_candidates
+        self.router_selection_mode = router_selection_mode
+        self.router_min_edge_over_next = router_min_edge_over_next
+        self.router_fallback_model = router_fallback_model
         self.specialist_weight_lookback_days = specialist_weight_lookback_days
         self.specialist_min_model_hold_days = specialist_min_model_hold_days
         self.specialist_switch_margin_min_avg_ev = specialist_switch_margin_min_avg_ev
@@ -140,6 +149,9 @@ class PipelineWorker(QObject):
                 specialist_weighting_mode=self.specialist_weighting_mode,
                 specialist_ensemble_models=self.specialist_ensemble_members,
                 model_router_candidates=self.model_router_candidates,
+                router_selection_mode=self.router_selection_mode,
+                router_min_edge_over_next=self.router_min_edge_over_next,
+                router_fallback_model=self.router_fallback_model,
                 specialist_weight_lookback_days=self.specialist_weight_lookback_days,
                 specialist_min_model_hold_days=self.specialist_min_model_hold_days,
                 specialist_switch_margin_min_avg_ev=self.specialist_switch_margin_min_avg_ev,
@@ -262,6 +274,11 @@ class FXPipelineWindow(QMainWindow):
         self.specialist_weighting_mode_input.setCurrentText(SPECIALIST_WEIGHTING_MODE)
         self.specialist_members_input = QLineEdit(",".join(SPECIALIST_ENSEMBLE_MEMBERS))
         self.model_router_candidates_input = QLineEdit(",".join(MODEL_ROUTER_CANDIDATES))
+        self.router_selection_mode_input = QComboBox()
+        self.router_selection_mode_input.addItems(["single", "top3_blend", "top5_blend"])
+        self.router_selection_mode_input.setCurrentText(ROUTER_SELECTION_MODE)
+        self.router_min_edge_input = QLineEdit(str(ROUTER_MIN_EDGE_OVER_NEXT))
+        self.router_fallback_model_input = QLineEdit(ROUTER_FALLBACK_MODEL)
         self.specialist_lookback_input = QLineEdit(str(SPECIALIST_WEIGHT_LOOKBACK_DAYS))
         self.specialist_min_hold_input = QLineEdit(str(SPECIALIST_MIN_MODEL_HOLD_DAYS))
         self.specialist_switch_margin_input = QLineEdit(str(SPECIALIST_SWITCH_MARGIN_MIN_AVG_EV))
@@ -339,6 +356,9 @@ class FXPipelineWindow(QMainWindow):
                 SPECIALIST_WEIGHT_LOOKBACK_DAYS,
                 REBALANCE_DAYS,
                 SPECIALIST_WEIGHTING_MODE,
+                ROUTER_SELECTION_MODE,
+                ROUTER_MIN_EDGE_OVER_NEXT,
+                ROUTER_FALLBACK_MODEL,
                 SPECIALIST_MIN_MODEL_HOLD_DAYS,
                 SPECIALIST_SWITCH_MARGIN_MIN_AVG_EV,
                 SPECIALIST_SWITCH_REQUIRE_POSITIVE_EV,
@@ -380,6 +400,9 @@ class FXPipelineWindow(QMainWindow):
         params_form.addRow("SPECIALIST_WEIGHTING_MODE", self.specialist_weighting_mode_input)
         params_form.addRow("SPECIALIST_ENSEMBLE_MEMBERS", self.specialist_members_input)
         params_form.addRow("MODEL_ROUTER_CANDIDATES", self.model_router_candidates_input)
+        params_form.addRow("ROUTER_SELECTION_MODE", self.router_selection_mode_input)
+        params_form.addRow("ROUTER_MIN_EDGE_OVER_NEXT", self.router_min_edge_input)
+        params_form.addRow("ROUTER_FALLBACK_MODEL", self.router_fallback_model_input)
         params_form.addRow("SPECIALIST_WEIGHT_LOOKBACK_DAYS", self.specialist_lookback_input)
         params_form.addRow("SPECIALIST_MIN_MODEL_HOLD_DAYS", self.specialist_min_hold_input)
         params_form.addRow("SPECIALIST_SWITCH_MARGIN_MIN_AVG_EV", self.specialist_switch_margin_input)
@@ -630,6 +653,12 @@ class FXPipelineWindow(QMainWindow):
                 for item in self.model_router_candidates_input.text().split(",")
                 if item.strip()
             ]
+            router_selection_mode = self.router_selection_mode_input.currentText().strip()
+            router_min_edge_over_next = self._read_nonnegative_float(
+                self.router_min_edge_input,
+                "ROUTER_MIN_EDGE_OVER_NEXT",
+            )
+            router_fallback_model = self.router_fallback_model_input.text().strip()
             if len(specialist_ensemble_members) < 2:
                 raise ValueError("SPECIALIST_ENSEMBLE_MEMBERS must contain at least two model names")
             if not model_router_candidates:
@@ -653,6 +682,9 @@ class FXPipelineWindow(QMainWindow):
                 specialist_weight_lookback_days,
                 rebalance_days,
                 specialist_weighting_mode,
+                router_selection_mode,
+                router_min_edge_over_next,
+                router_fallback_model,
                 specialist_min_model_hold_days,
                 specialist_switch_margin_min_avg_ev,
                 specialist_switch_require_positive_ev,
@@ -678,6 +710,9 @@ class FXPipelineWindow(QMainWindow):
             specialist_weighting_mode=specialist_weighting_mode,
             specialist_ensemble_members=specialist_ensemble_members,
             model_router_candidates=model_router_candidates,
+            router_selection_mode=router_selection_mode,
+            router_min_edge_over_next=router_min_edge_over_next,
+            router_fallback_model=router_fallback_model,
             specialist_weight_lookback_days=specialist_weight_lookback_days,
             specialist_min_model_hold_days=specialist_min_model_hold_days,
             specialist_switch_margin_min_avg_ev=specialist_switch_margin_min_avg_ev,
